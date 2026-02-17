@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "lip"
+version = "0.1.0"
+description = "RL-based molecular generation and optimization model"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "rdkit",
+    "meeko",
+    "vina",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+synthesis = ["aizynthfinder"]
+dynamicbind = ["pandas"]
+all = ["aizynthfinder", "pandas"]
+
+[project.scripts]
+lip = "lip.__main__:main"

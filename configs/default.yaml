@@ -1,0 +1,59 @@
+generator:
+  prior_model: ".reinvent"
+  device: "cpu"
+  batch_size: 50
+  sigma: 128
+  learning_rate: 0.0001
+  diversity_filter: "IdenticalMurckoScaffold"
+
+optimization:
+  mode: "managed"
+  n_steps: 10
+  batch_size: 100
+  max_score: 0.85
+  early_stop_patience: 5
+  inception:
+    memory_size: 100
+    sample_size: 10000
+    retention: "top"
+  n_molecules_per_round: 500
+  n_rounds: 50
+  diversity_threshold: 0.4
+  checkpoint_every: 5
+
+docking:
+  enabled: true
+  method: "vina"
+  exhaustiveness: 8
+  box_size: 25
+  weight: 0.5
+  transform:
+    high: -6.0
+    low: -12.0
+  cnn_scoring: "rescore"
+  score_mode: "vina"
+  analyze_interactions: true
+  interaction_weight: 0.3
+
+filter:
+  lipinski: true
+  pains: true
+
+pocket2mol:
+  enabled: false
+  n_samples: 3
+  bbox_size: 23.0
+  shape_weight: 0.6
+
+constraints: []
+
+receptor_pdb: ""
+pocket_center: [0.0, 0.0, 0.0]
+output_dir: "results/"
+scoring_method: "weighted_sum"
+
+paths:
+  pocket2mol_dir: ""
+  fpocket: ""
+  aizynthfinder_config: ""
+  dynamicbind_dir: ""

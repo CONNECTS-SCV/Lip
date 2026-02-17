@@ -1,0 +1,534 @@
+"""RL optimization loop - multi-cycle managed and manual modes."""
+
+from __future__ import annotations
+
+import csv
+import logging
+import random
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+from lip.config import LipConfig
+from lip.component_builder import ComponentBuilder
+from lip.constraints.base import ConstraintResult
+from lip.constraints.registry import create_constraint
+from lip.generator.reinvent import ReinventWrapper, StageConfig
+from lip.scoring.aggregator import ScoreAggregator
+from lip.scoring.docking import BaseDockingScorer, create_docking_scorer
+from lip.utils.chem import (
+    is_valid, canonicalize, check_lipinski, check_pains, is_reinvent_compatible,
+)
+from lip.utils.io import save_round_results, save_json, load_json
+from lip.utils.math import normalize_score
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Round result
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RoundResult:
+    round_num: int
+    molecules: list[dict[str, Any]]
+    best_score: float
+    avg_score: float
+    n_valid: int
+    n_total: int
+
+
+# ---------------------------------------------------------------------------
+# Run state (for resume)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RunState:
+    current_chunk: int = 0
+    current_round: int = 0
+    best_score: float = 0.0
+    total_molecules: int = 0
+    completed: bool = False
+
+    def save(self, path: str | Path):
+        save_json(self.__dict__, path)
+
+    @classmethod
+    def load(cls, path: str | Path) -> RunState:
+        data = load_json(path)
+        return cls(**data)
+
+
+# ---------------------------------------------------------------------------
+# Optimization Loop
+# ---------------------------------------------------------------------------
+
+class OptimizationLoop:
+    """Core RL optimization loop.
+
+    Orchestrates generate -> filter -> score -> aggregate cycle.
+    Component building is delegated to ComponentBuilder.
+    Docking scorer creation is delegated to the docking registry.
+    """
+
+    def __init__(self, config: LipConfig):
+        self.config = config
+        self.generator: ReinventWrapper | None = None
+        self.constraints: list[tuple[str, float, Any]] = []
+        self.docking_scorer: BaseDockingScorer | None = None
+        self.aggregator = ScoreAggregator()
+        self.component_builder = ComponentBuilder(config)
+        self.state = RunState()
+
+        self._on_round_complete: Callable[[RoundResult], None] | None = None
+
+    @classmethod
+    def from_config(cls, config: LipConfig) -> OptimizationLoop:
+        """Build loop from LipConfig."""
+        loop = cls(config)
+
+        # Generator
+        loop.generator = ReinventWrapper({
+            "prior_model": config.generator.prior_model,
+            "agent_model": config.generator.agent_model,
+            "device": config.generator.device,
+            "batch_size": config.generator.batch_size,
+            "sigma": config.generator.sigma,
+            "learning_rate": config.generator.learning_rate,
+            "diversity_filter": config.generator.diversity_filter,
+            "inception_memory_size": config.optimization.inception.memory_size,
+            "inception_sample_size": config.optimization.inception.sample_size,
+            "inception_retention_mode": config.optimization.inception.retention,
+            "work_dir": config.generator.work_dir,
+        })
+
+        # Constraints
+        for cc in config.constraints:
+            constraint = create_constraint(cc.type, cc.weight, cc.params)
+            loop.constraints.append((cc.type, cc.weight, constraint))
+
+        # Docking scorer (via registry)
+        if config.docking.enabled and config.receptor_pdb:
+            center = tuple(config.pocket_center)
+            box = (config.docking.box_size,) * 3
+            kwargs = {
+                "receptor_pdb": config.receptor_pdb,
+                "pocket_center": center,
+                "box_size": box,
+                "exhaustiveness": config.docking.exhaustiveness,
+            }
+            if config.docking.method == "gnina":
+                kwargs["cnn_scoring"] = config.docking.cnn_scoring
+                kwargs["score_mode"] = config.docking.score_mode
+            loop.docking_scorer = create_docking_scorer(config.docking.method, **kwargs)
+
+        return loop
+
+    def on_round_complete(self, callback: Callable[[RoundResult], None]):
+        """Register callback for round completion."""
+        self._on_round_complete = callback
+
+    # -----------------------------------------------------------------------
+    # Main entry
+    # -----------------------------------------------------------------------
+
+    def run(self) -> list[RoundResult]:
+        """Run the optimization loop."""
+        if self.config.optimization.mode == "managed":
+            return self._run_managed_mode()
+        else:
+            return self._run_manual_mode()
+
+    # -----------------------------------------------------------------------
+    # Managed mode: REINVENT4 handles RL internally
+    # -----------------------------------------------------------------------
+
+    def _run_managed_mode(self) -> list[RoundResult]:
+        """Run RL via REINVENT4 staged_learning, chunk by chunk.
+
+        Manages:
+        - Per-step RoundResult creation and callbacks
+        - Cross-chunk inception buffer with dedup and retention policy
+        - REINVENT4 bracket compatibility filtering for inception seeds
+        """
+        output_dir = Path(self.config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        n_steps = self.config.optimization.n_steps
+        chunk_size = 1  # 1 step per chunk for per-step granularity
+        n_chunks = n_steps
+
+        all_results: list[RoundResult] = []
+        inception_buffer: list[dict[str, Any]] = []
+        inception_enabled = self.config.optimization.inception.memory_size > 0
+        retention_mode = self.config.optimization.inception.retention
+        memory_size = self.config.optimization.inception.memory_size
+        steps_completed = self.state.current_chunk
+
+        for chunk_idx in range(self.state.current_chunk, n_chunks):
+            log.info(f"Step {chunk_idx + 1}/{n_steps}")
+
+            chunk_output_dir = output_dir / f"chunk_{chunk_idx:03d}"
+            chunk_output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Write inception buffer as seed CSV for REINVENT4
+            inception_file = None
+            if inception_enabled and inception_buffer:
+                compatible = [
+                    e for e in inception_buffer
+                    if is_reinvent_compatible(e["smiles"])
+                ]
+                n_filtered = len(inception_buffer) - len(compatible)
+                if n_filtered > 0:
+                    log.info(
+                        f"Inception filter: removed {n_filtered} "
+                        f"incompatible SMILES"
+                    )
+                if compatible:
+                    inception_csv = chunk_output_dir / "inception_seed.csv"
+                    with open(inception_csv, "w") as f:
+                        for entry in compatible:
+                            f.write(f"{entry['smiles']}\n")
+                    inception_file = str(inception_csv)
+
+            # Build components and stage config
+            components = self.component_builder.build_all(self.constraints)
+            chkpt_path = str(
+                output_dir / "checkpoints" / f"chunk_{chunk_idx:03d}.chkpt"
+            )
+            Path(chkpt_path).parent.mkdir(parents=True, exist_ok=True)
+
+            stage = StageConfig(
+                max_steps=chunk_size,
+                min_steps=1,
+                max_score=self.config.optimization.max_score,
+                scoring_components=components,
+                chkpt_file=chkpt_path,
+            )
+
+            process = self.generator.run_staged_learning(
+                stages=[stage],
+                output_dir=str(chunk_output_dir),
+                inception_smiles_file=inception_file,
+            )
+            process.wait()
+
+            # Parse RL CSV for per-step scores and molecules
+            chunk_molecules: list[dict[str, Any]] = []
+            step_scores: list[float] = []
+
+            rl_csv = chunk_output_dir / "staged_learning_1.csv"
+            if rl_csv.exists():
+                with open(rl_csv) as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        try:
+                            score = float(row.get("Score", 0))
+                            smiles = row.get("SMILES", "")
+                            state = row.get("SMILES_state", "0")
+
+                            step_scores.append(score)
+
+                            if state == "1" and smiles and score > 0:
+                                chunk_molecules.append({
+                                    "smiles": smiles,
+                                    "score": score,
+                                })
+                        except (ValueError, KeyError):
+                            continue
+
+            # Create RoundResult for this step
+            if step_scores:
+                rr = RoundResult(
+                    round_num=chunk_idx,
+                    molecules=[],
+                    best_score=max(step_scores),
+                    avg_score=sum(step_scores) / len(step_scores),
+                    n_valid=len(chunk_molecules),
+                    n_total=self.config.generator.batch_size,
+                )
+                all_results.append(rr)
+                if self._on_round_complete:
+                    self._on_round_complete(rr)
+
+            # Update inception buffer
+            if inception_enabled and chunk_molecules:
+                # Dedup new molecules (keep highest score per SMILES)
+                seen: dict[str, dict[str, Any]] = {}
+                for mol in chunk_molecules:
+                    smi = mol["smiles"]
+                    if smi not in seen or mol["score"] > seen[smi]["score"]:
+                        seen[smi] = {"smiles": smi, "score": mol["score"]}
+
+                # Merge with existing buffer
+                buffer_map = {e["smiles"]: e for e in inception_buffer}
+                for entry in seen.values():
+                    smi = entry["smiles"]
+                    if smi not in buffer_map or entry["score"] > buffer_map[smi]["score"]:
+                        buffer_map[smi] = entry
+
+                all_entries = list(buffer_map.values())
+
+                # Apply retention policy
+                if len(all_entries) > memory_size:
+                    if retention_mode == "random":
+                        inception_buffer = random.sample(all_entries, memory_size)
+                    else:  # "top"
+                        all_entries.sort(key=lambda e: e["score"], reverse=True)
+                        inception_buffer = all_entries[:memory_size]
+                else:
+                    inception_buffer = all_entries
+
+                log.info(
+                    f"Inception buffer: {len(inception_buffer)}/{memory_size} "
+                    f"(+{len(seen)} new, mode={retention_mode})"
+                )
+
+            # Load checkpoint for next chunk
+            if Path(chkpt_path).exists():
+                self.generator.load_checkpoint(chkpt_path)
+
+            self.state.current_chunk = chunk_idx + 1
+            self.state.best_score = max(
+                self.state.best_score,
+                max((r.best_score for r in all_results), default=0.0),
+            )
+            self.state.save(output_dir / "run_state.json")
+
+            if self._should_early_stop(all_results):
+                log.info("Early stopping triggered")
+                break
+
+        self.state.completed = True
+        self.state.save(output_dir / "run_state.json")
+        return all_results
+
+    # -----------------------------------------------------------------------
+    # Manual mode: generate -> filter -> score -> select
+    # -----------------------------------------------------------------------
+
+    def _run_manual_mode(self) -> list[RoundResult]:
+        """Manual optimization: generate -> filter -> score -> select."""
+        output_dir = Path(self.config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        n_rounds = self.config.optimization.n_rounds
+        n_mols = self.config.optimization.n_molecules_per_round
+
+        all_results = []
+
+        for round_num in range(self.state.current_round, n_rounds):
+            log.info(f"Round {round_num + 1}/{n_rounds}")
+
+            smiles = self._generate_batch(n_mols)
+
+            # Filter
+            if self.config.filter.lipinski:
+                smiles = [s for s in smiles if check_lipinski(s)]
+            if self.config.filter.pains:
+                smiles = [s for s in smiles if check_pains(s)]
+
+            if not smiles:
+                log.warning(f"Round {round_num}: no molecules passed filters")
+                continue
+
+            # Score constraints
+            constraint_results, constraint_weights = self._score_constraints(smiles)
+
+            # Aggregate
+            final_scores = self._aggregate_scores(
+                constraint_results, constraint_weights, len(smiles)
+            )
+
+            # Build records and save
+            molecules = self._build_records(
+                smiles, final_scores, constraint_results, round_num
+            )
+            molecules.sort(key=lambda m: m["score"], reverse=True)
+            molecules = self._select_diverse(molecules, n_mols)
+            save_round_results(round_num, molecules, str(output_dir))
+
+            best = molecules[0]["score"] if molecules else 0.0
+            avg = sum(m["score"] for m in molecules) / len(molecules) if molecules else 0.0
+
+            round_result = RoundResult(
+                round_num=round_num,
+                molecules=molecules,
+                best_score=best,
+                avg_score=avg,
+                n_valid=len(molecules),
+                n_total=n_mols,
+            )
+            all_results.append(round_result)
+
+            if self._on_round_complete:
+                self._on_round_complete(round_result)
+
+            self.state.current_round = round_num + 1
+            self.state.best_score = max(self.state.best_score, best)
+            self.state.total_molecules += len(molecules)
+            self.state.save(output_dir / "run_state.json")
+
+            if (round_num + 1) % self.config.optimization.checkpoint_every == 0:
+                chkpt = output_dir / "checkpoints" / f"round_{round_num:03d}.chkpt"
+                chkpt.parent.mkdir(parents=True, exist_ok=True)
+                self.generator.save_checkpoint(str(chkpt))
+
+            if self._should_early_stop(all_results):
+                log.info("Early stopping triggered")
+                break
+
+        self.state.completed = True
+        self.state.save(output_dir / "run_state.json")
+
+        return all_results
+
+    # -----------------------------------------------------------------------
+    # Scoring helpers
+    # -----------------------------------------------------------------------
+
+    def _score_constraints(
+        self, smiles: list[str],
+    ) -> tuple[dict[str, ConstraintResult], dict[str, float]]:
+        """Score SMILES against all constraints + docking."""
+        results = {}
+        weights = {}
+
+        for name, weight, constraint in self.constraints:
+            results[name] = constraint.score(smiles)
+            weights[name] = weight
+
+        if self.docking_scorer is not None:
+            docking_results = self.docking_scorer.dock_batch(smiles)
+            raw_scores = [r.score for r in docking_results]
+
+            t_high = self.config.docking.transform.high
+            t_low = self.config.docking.transform.low
+            norm_scores = [
+                max(0.0, min(1.0, normalize_score(s, high=t_high, low=t_low)))
+                for s in raw_scores
+            ]
+
+            results["docking"] = ConstraintResult(
+                scores=norm_scores,
+                passed=[s <= t_high for s in raw_scores],
+                raw_values=raw_scores,
+            )
+            weights["docking"] = self.config.docking.weight
+
+        return results, weights
+
+    def _aggregate_scores(
+        self,
+        results: dict[str, ConstraintResult],
+        weights: dict[str, float],
+        n: int,
+    ) -> list[float]:
+        """Aggregate constraint scores into final scores."""
+        if self.config.scoring_method == "pareto":
+            return self.aggregator.pareto_rank(results, n)
+        agg = self.aggregator.weighted_sum_batch(results, weights, n)
+        return [a.total_score for a in agg]
+
+    def _build_records(
+        self,
+        smiles: list[str],
+        final_scores: list[float],
+        constraint_results: dict[str, ConstraintResult],
+        round_num: int,
+    ) -> list[dict[str, Any]]:
+        """Build molecule record dicts from scoring results."""
+        molecules = []
+        for i, (smi, score) in enumerate(zip(smiles, final_scores)):
+            rec = {"smiles": smi, "score": score, "round": round_num}
+            for name, result in constraint_results.items():
+                if i < len(result.scores):
+                    rec[f"{name}_score"] = result.scores[i]
+                if i < len(result.raw_values):
+                    rec[f"{name}_raw"] = result.raw_values[i]
+            molecules.append(rec)
+        return molecules
+
+    # -----------------------------------------------------------------------
+    # Misc helpers
+    # -----------------------------------------------------------------------
+
+    def _generate_batch(self, n: int) -> list[str]:
+        """Generate a batch of valid, canonical SMILES via REINVENT4 sampling."""
+        gen_result = self.generator.sample(n)
+
+        seen: set[str] = set()
+        valid_smiles: list[str] = []
+        for smi in gen_result.smiles:
+            if not is_valid(smi):
+                continue
+            canonical = canonicalize(smi)
+            if canonical is None or canonical in seen:
+                continue
+            seen.add(canonical)
+            valid_smiles.append(canonical)
+
+        log.info(
+            f"Generated {len(gen_result.smiles)} raw, "
+            f"{len(valid_smiles)} valid unique SMILES"
+        )
+        return valid_smiles
+
+    def _select_diverse(
+        self, molecules: list[dict[str, Any]], top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Greedy diversity selection from scored molecules.
+
+        Molecules must already be sorted by score (desc).
+        Accepts a candidate only if its maximum Tanimoto similarity to all
+        previously selected molecules is <= (1.0 - diversity_threshold).
+        """
+        from lip.utils.chem import get_morgan_fp
+        from rdkit.Chem import DataStructs
+
+        threshold = self.config.optimization.diversity_threshold
+        if threshold <= 0:
+            return molecules[:top_k]
+
+        selected: list[dict[str, Any]] = []
+        selected_fps: list[Any] = []
+
+        for mol_data in molecules:
+            if len(selected) >= top_k:
+                break
+
+            fp = get_morgan_fp(mol_data["smiles"])
+            if fp is None:
+                continue
+
+            if selected_fps:
+                max_sim = max(
+                    DataStructs.TanimotoSimilarity(fp, sfp) for sfp in selected_fps
+                )
+                if max_sim > (1.0 - threshold):
+                    continue
+
+            selected.append(mol_data)
+            selected_fps.append(fp)
+
+        return selected
+
+    def _should_early_stop(self, results: list[RoundResult]) -> bool:
+        """Check if early stopping criteria are met."""
+        patience = self.config.optimization.early_stop_patience
+        max_score = self.config.optimization.max_score
+
+        if not results:
+            return False
+
+        if results[-1].best_score >= max_score:
+            return True
+
+        if len(results) >= patience:
+            recent = results[-patience:]
+            scores = [r.best_score for r in recent]
+            if max(scores) - min(scores) < 0.001:
+                return True
+
+        return False

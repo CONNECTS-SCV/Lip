@@ -1,0 +1,37 @@
+# =============================================================================
+# Lip - Required Dependencies
+# =============================================================================
+
+# Core (필수 - 없으면 실행 불가)
+numpy
+rdkit
+meeko
+vina
+pyyaml
+
+# =============================================================================
+# Optional Dependencies (특정 기능 사용 시)
+# =============================================================================
+
+# 합성 가능성 분석 (lip/scoring/synthesis.py)
+# aizynthfinder
+
+# DynamicBind 결과 파싱 (lip/constraints/dynamicbind.py)
+# pandas
+
+# =============================================================================
+# External CLI Tools (pip이 아닌 별도 설치 필요)
+# =============================================================================
+#
+# Open Babel (obabel)  - PDBQT/PDB 변환
+#   conda install -c conda-forge openbabel
+#
+# GNINA               - CNN 기반 도킹 (docking.method = "gnina" 사용 시)
+#   https://github.com/gnina/gnina
+#
+# fpocket             - 포켓 감지 (pocket detection 사용 시)
+#   conda install -c conda-forge fpocket
+#
+# REINVENT4           - 분자 생성/RL 엔진
+#   https://github.com/MolecularAI/REINVENT4
+#   pip install reinvent
