@@ -10,11 +10,6 @@ from typing import Any
 
 from lip.config import LipConfig, ConstraintConfig
 from lip.loop import OptimizationLoop, RoundResult, RunState
-from lip.pocket2mol.generate import (
-    run_pocket2mol,
-    select_diverse_representatives,
-    combine_sdfs,
-)
 from lip.utils.io import save_json
 
 log = logging.getLogger(__name__)
@@ -107,6 +102,12 @@ def run(config: LipConfig, resume_dir: str | None = None) -> RunResult:
 
 def _run_pocket2mol(config: LipConfig) -> None:
     """Run Pocket2Mol and inject shape_similarity constraint."""
+    from lip.pocket2mol.generate import (
+        run_pocket2mol,
+        select_diverse_representatives,
+        combine_sdfs,
+    )
+
     log.info("Running Pocket2Mol for reference molecule generation...")
 
     sdf_paths = run_pocket2mol(

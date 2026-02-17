@@ -35,6 +35,7 @@ class DockingResult:
     score: float
     pose_pdbqt: str = ""
     interaction_count: int = 0
+    success: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +143,9 @@ class BaseDockingScorer(ABC):
     def _convert_receptor(self, pdb_path: str) -> str | None:
         """Convert receptor PDB → PDBQT via obabel."""
         try:
-            out_path = tempfile.mktemp(suffix=".pdbqt")
+            out_f = tempfile.NamedTemporaryFile(suffix=".pdbqt", delete=False)
+            out_path = out_f.name
+            out_f.close()
             subprocess.run(
                 ["obabel", pdb_path, "-O", out_path, "-xr"],
                 capture_output=True,
@@ -167,7 +170,7 @@ class VinaDockingScorer(BaseDockingScorer):
         receptor_pdbqt = self.get_receptor_pdbqt()
 
         if ligand_pdbqt is None or receptor_pdbqt is None:
-            return DockingResult(smiles=smiles, score=0.0)
+            return DockingResult(smiles=smiles, score=0.0, success=False)
 
         try:
             from vina import Vina
@@ -192,7 +195,7 @@ class VinaDockingScorer(BaseDockingScorer):
             )
         except Exception as e:
             log.debug(f"Vina docking failed for {smiles}: {e}")
-            return DockingResult(smiles=smiles, score=0.0)
+            return DockingResult(smiles=smiles, score=0.0, success=False)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +223,7 @@ class GninaDockingScorer(BaseDockingScorer):
         receptor_pdbqt = self.get_receptor_pdbqt()
 
         if ligand_pdbqt is None or receptor_pdbqt is None:
-            return DockingResult(smiles=smiles, score=0.0)
+            return DockingResult(smiles=smiles, score=0.0, success=False)
 
         try:
             with tempfile.NamedTemporaryFile(
@@ -229,7 +232,9 @@ class GninaDockingScorer(BaseDockingScorer):
                 lig_f.write(ligand_pdbqt)
                 lig_path = lig_f.name
 
-            out_path = tempfile.mktemp(suffix=".pdbqt")
+            out_f = tempfile.NamedTemporaryFile(suffix=".pdbqt", delete=False)
+            out_path = out_f.name
+            out_f.close()
 
             cx, cy, cz = self.pocket_center
             sx, sy, sz = self.box_size
@@ -261,7 +266,7 @@ class GninaDockingScorer(BaseDockingScorer):
 
         except Exception as e:
             log.debug(f"GNINA docking failed for {smiles}: {e}")
-            return DockingResult(smiles=smiles, score=0.0)
+            return DockingResult(smiles=smiles, score=0.0, success=False)
         finally:
             for p in [lig_path, out_path]:
                 try:

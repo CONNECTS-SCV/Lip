@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 DEFAULT_PRIOR = ".reinvent"
 
 
+def _toml_path(path: str) -> str:
+    """Normalize path for TOML: convert backslashes to forward slashes."""
+    return path.replace("\\", "/")
+
+
 # ---------------------------------------------------------------------------
 # REINVENT4 scoring component / stage config
 # ---------------------------------------------------------------------------
@@ -208,8 +213,8 @@ class ReinventWrapper(BaseGenerator):
             f'device = "{self.device}"\n'
             f"\n"
             f"[parameters]\n"
-            f'model_file = "{model}"\n'
-            f'output_file = "{output_file}"\n'
+            f'model_file = "{_toml_path(model)}"\n'
+            f'output_file = "{_toml_path(output_file)}"\n'
             f"num_smiles = {n}\n"
             f"unique_molecules = true\n"
         )
@@ -348,13 +353,13 @@ class ReinventWrapper(BaseGenerator):
         lines = [
             f'run_type = "staged_learning"',
             f'device = "{self.device}"',
-            f'tb_logdir = "{output_dir}/tb_logs"',
+            f'tb_logdir = "{_toml_path(output_dir)}/tb_logs"',
             "",
             "[parameters]",
-            f'prior_file = "{self.prior_model}"',
-            f'agent_file = "{self.agent_model}"',
+            f'prior_file = "{_toml_path(self.prior_model)}"',
+            f'agent_file = "{_toml_path(self.agent_model)}"',
             f"batch_size = {self.batch_size}",
-            f"summary_csv_prefix = \"{output_dir}/staged_learning\"",
+            f"summary_csv_prefix = \"{_toml_path(output_dir)}/staged_learning\"",
             "",
             "[learning_strategy]",
             'type = "DAP"',
@@ -378,7 +383,7 @@ class ReinventWrapper(BaseGenerator):
             f"sample_size = {self.inception_sample_size}",
         ])
         if inception_smiles_file:
-            lines.append(f'smiles_file = "{inception_smiles_file}"')
+            lines.append(f'smiles_file = "{_toml_path(inception_smiles_file)}"')
         lines.append("")
 
         # Stages
@@ -390,7 +395,7 @@ class ReinventWrapper(BaseGenerator):
                 f"max_score = {stage.max_score}",
             ])
             if stage.chkpt_file:
-                lines.append(f'chkpt_file = "{stage.chkpt_file}"')
+                lines.append(f'chkpt_file = "{_toml_path(stage.chkpt_file)}"')
             lines.append("")
 
             # Scoring components for this stage

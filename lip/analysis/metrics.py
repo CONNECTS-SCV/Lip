@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem, Descriptors, MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors, MurckoScaffold, QED as RDKitQED
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ def compute_step_metrics(
 _PROPERTY_FUNCS = {
     "mw": Descriptors.ExactMolWt,
     "logp": Descriptors.MolLogP,
-    "qed": lambda mol: __import__("rdkit.Chem.QED", fromlist=["qed"]).qed(mol),
+    "qed": RDKitQED.qed,
     "tpsa": Descriptors.TPSA,
     "hbd": Descriptors.NumHDonors,
     "hba": Descriptors.NumHAcceptors,

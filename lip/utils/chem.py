@@ -57,7 +57,7 @@ def compute_properties(smiles: str) -> dict[str, Any] | None:
     }
 
 
-PROPERTY_FUNCTIONS: dict[str, callable] = {
+PROPERTY_FUNCTIONS: dict[str, Any] = {
     "molecular_weight": Descriptors.ExactMolWt,
     "logp": Descriptors.MolLogP,
     "tpsa": Descriptors.TPSA,

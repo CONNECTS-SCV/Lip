@@ -64,6 +64,7 @@ class ScoreAggregator:
         """Compute Pareto-based scores (normalized rank).
 
         Non-dominated molecules get higher scores.
+        Uses fast non-dominated sort: O(M * N^2) where M = objectives, N = molecules.
         """
         if not results or n_molecules == 0:
             return []
@@ -77,36 +78,50 @@ class ScoreAggregator:
                 if i < len(results[name].scores):
                     matrix[i, j] = results[name].scores[i]
 
-        # Compute Pareto fronts
-        ranks = np.zeros(n_molecules)
-        remaining = set(range(n_molecules))
-        front_rank = 0
+        # Fast non-dominated sort (NSGA-II style)
+        n = n_molecules
+        domination_count = np.zeros(n, dtype=int)
+        dominated_sets: list[list[int]] = [[] for _ in range(n)]
+        ranks = np.zeros(n, dtype=int)
 
-        while remaining:
-            front_rank += 1
-            front = []
-            for i in remaining:
-                dominated = False
-                for j in remaining:
-                    if i == j:
-                        continue
-                    # j dominates i if j >= i in all objectives and j > i in at least one
-                    if (
-                        np.all(matrix[j] >= matrix[i])
-                        and np.any(matrix[j] > matrix[i])
-                    ):
-                        dominated = True
-                        break
-                if not dominated:
-                    front.append(i)
+        # For each pair, check domination using vectorized comparison
+        for i in range(n):
+            for j in range(i + 1, n):
+                i_ge_j = np.all(matrix[i] >= matrix[j])
+                i_gt_j = np.any(matrix[i] > matrix[j])
+                j_ge_i = np.all(matrix[j] >= matrix[i])
+                j_gt_i = np.any(matrix[j] > matrix[i])
 
-            for i in front:
+                if i_ge_j and i_gt_j:
+                    # i dominates j
+                    dominated_sets[i].append(j)
+                    domination_count[j] += 1
+                elif j_ge_i and j_gt_i:
+                    # j dominates i
+                    dominated_sets[j].append(i)
+                    domination_count[i] += 1
+
+        # Build fronts iteratively
+        current_front = [i for i in range(n) if domination_count[i] == 0]
+        front_rank = 1
+
+        while current_front:
+            for i in current_front:
                 ranks[i] = front_rank
-                remaining.discard(i)
+            next_front = []
+            for i in current_front:
+                for j in dominated_sets[i]:
+                    domination_count[j] -= 1
+                    if domination_count[j] == 0:
+                        next_front.append(j)
+            current_front = next_front
+            front_rank += 1
+
+        max_rank = front_rank - 1
 
         # Normalize: front 1 → highest score
-        if front_rank > 0:
-            scores = 1.0 - (ranks - 1) / max(front_rank, 1)
+        if max_rank > 0:
+            scores = 1.0 - (ranks - 1) / max(max_rank, 1)
         else:
             scores = np.ones(n_molecules)
 

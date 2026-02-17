@@ -95,6 +95,10 @@ def analyze_pose(
 
 def _pdbqt_to_mol(pdbqt_string: str) -> Chem.Mol | None:
     """Convert PDBQT string to RDKit Mol via obabel."""
+    import os
+
+    pdbqt_path = None
+    pdb_path = None
     try:
         with tempfile.NamedTemporaryFile(
             suffix=".pdbqt", mode="w", delete=False
@@ -102,7 +106,10 @@ def _pdbqt_to_mol(pdbqt_string: str) -> Chem.Mol | None:
             f.write(pdbqt_string)
             pdbqt_path = f.name
 
-        pdb_path = tempfile.mktemp(suffix=".pdb")
+        pdb_f = tempfile.NamedTemporaryFile(suffix=".pdb", delete=False)
+        pdb_path = pdb_f.name
+        pdb_f.close()
+
         subprocess.run(
             ["obabel", pdbqt_path, "-O", pdb_path],
             capture_output=True, timeout=30,
@@ -113,6 +120,13 @@ def _pdbqt_to_mol(pdbqt_string: str) -> Chem.Mol | None:
     except Exception as e:
         log.debug(f"PDBQT conversion failed: {e}")
         return None
+    finally:
+        for p in [pdbqt_path, pdb_path]:
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
 
 # ---------------------------------------------------------------------------

@@ -226,11 +226,11 @@ class OptimizationLoop:
                         try:
                             score = float(row.get("Score", 0))
                             smiles = row.get("SMILES", "")
-                            state = row.get("SMILES_state", "0")
+                            smiles_state = row.get("SMILES_state", "0")
 
                             step_scores.append(score)
 
-                            if state == "1" and smiles and score > 0:
+                            if smiles_state == "1" and smiles and score > 0:
                                 chunk_molecules.append({
                                     "smiles": smiles,
                                     "score": score,
@@ -242,7 +242,7 @@ class OptimizationLoop:
             if step_scores:
                 rr = RoundResult(
                     round_num=chunk_idx,
-                    molecules=[],
+                    molecules=chunk_molecules,
                     best_score=max(step_scores),
                     avg_score=sum(step_scores) / len(step_scores),
                     n_valid=len(chunk_molecules),
@@ -401,18 +401,27 @@ class OptimizationLoop:
 
         if self.docking_scorer is not None:
             docking_results = self.docking_scorer.dock_batch(smiles)
-            raw_scores = [r.score for r in docking_results]
 
             t_high = self.config.docking.transform.high
             t_low = self.config.docking.transform.low
-            norm_scores = [
-                max(0.0, min(1.0, normalize_score(s, high=t_high, low=t_low)))
-                for s in raw_scores
-            ]
+            norm_scores = []
+            passed_list = []
+            raw_scores = []
+
+            for r in docking_results:
+                raw_scores.append(r.score)
+                if not r.success:
+                    norm_scores.append(0.0)
+                    passed_list.append(False)
+                else:
+                    norm_scores.append(
+                        max(0.0, min(1.0, normalize_score(r.score, high=t_high, low=t_low)))
+                    )
+                    passed_list.append(r.score <= t_high)
 
             results["docking"] = ConstraintResult(
                 scores=norm_scores,
-                passed=[s <= t_high for s in raw_scores],
+                passed=passed_list,
                 raw_values=raw_scores,
             )
             weights["docking"] = self.config.docking.weight
