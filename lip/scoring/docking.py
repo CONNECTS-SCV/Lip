@@ -315,6 +315,15 @@ def vina_external_process_main():
         exhaustiveness=args.exhaustiveness,
     )
 
+    # Pre-load protein mol for interaction analysis
+    protein_mol = None
+    if args.analyze_interactions:
+        try:
+            from rdkit import Chem
+            protein_mol = Chem.MolFromPDBFile(args.receptor, removeHs=False)
+        except Exception as e:
+            log.warning(f"Could not load protein mol for interaction analysis: {e}")
+
     # REINVENT4 ExternalProcess protocol: read JSON from stdin
     for line in sys.stdin:
         line = line.strip()
@@ -330,7 +339,21 @@ def vina_external_process_main():
         for smi in smiles_list:
             result = scorer.dock_smiles(smi)
             docking_scores.append(result.score)
-            interaction_counts.append(result.interaction_count)
+
+            if args.analyze_interactions and result.success and result.pose_pdbqt:
+                try:
+                    from lip.scoring.interactions import analyze_pose
+                    report = analyze_pose(
+                        protein_pdb=args.receptor,
+                        pose_pdbqt=result.pose_pdbqt,
+                        smiles=smi,
+                        protein_mol=protein_mol,
+                    )
+                    interaction_counts.append(report.total_count)
+                except Exception:
+                    interaction_counts.append(0)
+            else:
+                interaction_counts.append(0)
 
         response = {
             "version": 1,

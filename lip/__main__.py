@@ -26,6 +26,7 @@ def main():
     _add_docking_args(run_parser)
     _add_constraint_args(run_parser)
     _add_path_args(run_parser)
+    _add_synthesis_args(run_parser)
     run_parser.add_argument("--resume", type=str, default=None, help="Resume from run directory")
 
     # --- score ---
@@ -35,6 +36,18 @@ def main():
     _add_constraint_args(score_parser)
     _add_path_args(score_parser)
     score_parser.add_argument("--smiles", type=str, nargs="+", required=True, help="SMILES to score")
+
+    # --- synthesis ---
+    synth_parser = subparsers.add_parser("synthesis", help="Analyze synthesis routes for molecules")
+    _add_common_args(synth_parser)
+    _add_path_args(synth_parser)
+    _add_synthesis_args(synth_parser)
+    synth_parser.add_argument("--smiles", type=str, nargs="+", required=False,
+                              help="SMILES to analyze")
+    synth_parser.add_argument("--input-csv", dest="input_csv", type=str, default=None,
+                              help="CSV file with SMILES column")
+    synth_parser.add_argument("--smiles-column", dest="smiles_column", type=str, default="smiles",
+                              help="Column name for SMILES in CSV (default: smiles)")
 
     # --- pocket2mol ---
     p2m_parser = subparsers.add_parser("pocket2mol", help="Generate reference molecules")
@@ -67,6 +80,8 @@ def main():
         _cmd_run(config, args)
     elif args.command == "score":
         _cmd_score(config, args)
+    elif args.command == "synthesis":
+        _cmd_synthesis(config, args)
     elif args.command == "pocket2mol":
         _cmd_pocket2mol(config, args)
 
@@ -105,6 +120,53 @@ def _cmd_score(config: LipConfig, args):
         print()
 
 
+def _cmd_synthesis(config: LipConfig, args):
+    from lip.scoring.synthesis import analyze_batch, is_available
+    from pathlib import Path
+
+    if not is_available():
+        print("Error: AiZynthFinder is not installed.")
+        print("Install with: pip install aizynthfinder")
+        sys.exit(1)
+
+    smiles_list = []
+    if hasattr(args, "smiles") and args.smiles:
+        smiles_list = args.smiles
+    elif hasattr(args, "input_csv") and args.input_csv:
+        from lip.utils.io import load_smiles_from_csv
+        smiles_list = load_smiles_from_csv(args.input_csv,
+                                           column=getattr(args, "smiles_column", "smiles"))
+
+    if not smiles_list:
+        print("Error: No SMILES provided. Use --smiles or --input-csv")
+        sys.exit(1)
+
+    print(f"Analyzing synthesis for {len(smiles_list)} molecule(s)...")
+
+    results = analyze_batch(
+        smiles_list,
+        config_path=config.paths.aizynthfinder_config or None,
+        time_limit=config.synthesis.time_limit,
+    )
+
+    n_solved = sum(1 for r in results if r.is_solved)
+    print(f"\nResults: {n_solved}/{len(results)} solved")
+    for r in results:
+        status = "SOLVED" if r.is_solved else "UNSOLVED"
+        print(f"  [{status}] {r.smiles}: {r.n_routes} routes, best_score={r.best_score:.3f}")
+        if r.routes:
+            best = r.routes[0]
+            print(f"    Best route: {best.n_steps} steps, "
+                  f"{len(best.starting_materials)} starting materials")
+
+    if config.output_dir:
+        from lip.utils.io import save_json
+        from dataclasses import asdict
+        output_path = Path(config.output_dir) / "synthesis_analysis.json"
+        save_json([asdict(r) for r in results], output_path)
+        print(f"\nResults saved to {output_path}")
+
+
 def _cmd_pocket2mol(config: LipConfig, args):
     from lip.pocket2mol.generate import run_pocket2mol
 
@@ -137,6 +199,9 @@ def _add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument("--device", type=str, default=None, choices=["cpu", "cuda"])
     parser.add_argument("--scoring-method", dest="scoring_method", type=str, default=None,
                         choices=["weighted_sum", "pareto"])
+    parser.add_argument("--no-auto-pocket", dest="auto_pocket",
+                        action="store_false", default=None,
+                        help="Disable automatic pocket detection from PDB")
     parser.add_argument("--log-level", dest="log_level", type=str, default="info",
                         choices=["debug", "info", "warning", "error"])
 
@@ -196,6 +261,17 @@ def _add_constraint_args(parser: argparse.ArgumentParser):
     g.add_argument("--filter-pains", dest="filter_pains", type=_str_to_bool, default=None)
 
 
+def _add_synthesis_args(parser: argparse.ArgumentParser):
+    g = parser.add_argument_group("Synthesis")
+    g.add_argument("--no-synthesis", dest="synthesis_enabled",
+                    action="store_false", default=None,
+                    help="Disable post-optimization synthesis analysis")
+    g.add_argument("--synthesis-top-n", dest="synthesis_top_n", type=int, default=None,
+                    help="Number of top molecules to analyze for synthesis (default: 10)")
+    g.add_argument("--synthesis-time-limit", dest="synthesis_time_limit", type=int, default=None,
+                    help="MCTS time limit per molecule in seconds (default: 120)")
+
+
 def _add_path_args(parser: argparse.ArgumentParser):
     g = parser.add_argument_group("External tool paths")
     g.add_argument("--pocket2mol-dir", dest="pocket2mol_dir", type=str, default=None)
@@ -218,7 +294,8 @@ def _args_to_dict(args: argparse.Namespace) -> dict:
     for k, v in vars(args).items():
         if v is not None and k not in ("command", "config", "log_level", "resume",
                                         "smiles", "cli_constraints",
-                                        "n_samples", "bbox_size"):
+                                        "n_samples", "bbox_size",
+                                        "input_csv", "smiles_column"):
             d[k] = v
 
     # Parse CLI constraints

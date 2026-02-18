@@ -49,8 +49,16 @@ constraints: []
 
 receptor_pdb: ""
 pocket_center: [0.0, 0.0, 0.0]
+auto_pocket: true
 output_dir: "results/"
 scoring_method: "weighted_sum"
+
+synthesis:
+  enabled: true
+  top_n: 10
+  time_limit: 120
+  iteration_limit: 100
+  max_routes: 5
 
 paths:
   pocket2mol_dir: ""

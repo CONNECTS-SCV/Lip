@@ -426,7 +426,85 @@ class OptimizationLoop:
             )
             weights["docking"] = self.config.docking.weight
 
+            # Interaction analysis
+            if self.config.docking.analyze_interactions:
+                int_scores, int_passed, int_raw = (
+                    self._analyze_interactions_batch(docking_results)
+                )
+                results["interactions"] = ConstraintResult(
+                    scores=int_scores,
+                    passed=int_passed,
+                    raw_values=int_raw,
+                )
+                weights["interactions"] = self.config.docking.interaction_weight
+
         return results, weights
+
+    def _get_protein_mol(self):
+        """Load and cache protein RDKit Mol for interaction analysis."""
+        if not hasattr(self, "_protein_mol_cache"):
+            self._protein_mol_cache = None
+
+        if self._protein_mol_cache is not None:
+            return self._protein_mol_cache
+
+        try:
+            from rdkit import Chem
+            mol = Chem.MolFromPDBFile(self.config.receptor_pdb, removeHs=False)
+            self._protein_mol_cache = mol
+            if mol is not None:
+                log.debug(f"Loaded protein mol: {mol.GetNumAtoms()} atoms")
+            else:
+                log.warning("Failed to parse protein PDB for interaction analysis")
+            return mol
+        except Exception as e:
+            log.warning(f"Could not load protein for interaction analysis: {e}")
+            return None
+
+    def _analyze_interactions_batch(
+        self, docking_results: list,
+    ) -> tuple[list[float], list[bool], list[int]]:
+        """Run interaction analysis on successful docking poses.
+
+        Returns:
+            (normalized_scores, passed_list, raw_interaction_counts)
+        """
+        from lip.scoring.interactions import analyze_pose
+
+        scores = []
+        passed = []
+        raw_counts = []
+
+        protein_mol = self._get_protein_mol()
+
+        for r in docking_results:
+            if not r.success or not r.pose_pdbqt:
+                scores.append(0.0)
+                passed.append(False)
+                raw_counts.append(0)
+                continue
+
+            try:
+                report = analyze_pose(
+                    protein_pdb=self.config.receptor_pdb,
+                    pose_pdbqt=r.pose_pdbqt,
+                    smiles=r.smiles,
+                    protein_mol=protein_mol,
+                )
+                count = report.total_count
+                r.interaction_count = count
+
+                norm = min(1.0, count / 10.0)
+                scores.append(norm)
+                passed.append(count > 0)
+                raw_counts.append(count)
+            except Exception as e:
+                log.debug(f"Interaction analysis failed for {r.smiles}: {e}")
+                scores.append(0.0)
+                passed.append(False)
+                raw_counts.append(0)
+
+        return scores, passed, raw_counts
 
     def _aggregate_scores(
         self,

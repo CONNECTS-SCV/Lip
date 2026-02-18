@@ -105,6 +105,15 @@ class PathsConfig:
     dynamicbind_dir: str = ""
 
 
+@dataclass
+class SynthesisConfig:
+    enabled: bool = True
+    top_n: int = 10
+    time_limit: int = 120
+    iteration_limit: int = 100
+    max_routes: int = 5
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
@@ -118,9 +127,11 @@ class LipConfig:
     filter: FilterConfig = field(default_factory=FilterConfig)
     pocket2mol: Pocket2MolConfig = field(default_factory=Pocket2MolConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
+    synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
 
     receptor_pdb: str = ""
     pocket_center: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    auto_pocket: bool = True
     output_dir: str = "results/"
     scoring_method: str = "weighted_sum"  # "weighted_sum" | "pareto"
 
@@ -180,8 +191,12 @@ class LipConfig:
         if "paths" in data:
             cfg.paths = _merge_dataclass(PathsConfig, data["paths"])
 
+        # Synthesis
+        if "synthesis" in data:
+            cfg.synthesis = _merge_dataclass(SynthesisConfig, data["synthesis"])
+
         # Top-level scalars
-        for key in ("receptor_pdb", "pocket_center", "output_dir", "scoring_method"):
+        for key in ("receptor_pdb", "pocket_center", "auto_pocket", "output_dir", "scoring_method"):
             if key in data:
                 setattr(cfg, key, data[key])
 
@@ -234,6 +249,10 @@ class LipConfig:
             "fpocket": ("paths", "fpocket"),
             "aizynthfinder_config": ("paths", "aizynthfinder_config"),
             "dynamicbind_dir": ("paths", "dynamicbind_dir"),
+            # Synthesis
+            "synthesis_enabled": ("synthesis", "enabled"),
+            "synthesis_top_n": ("synthesis", "top_n"),
+            "synthesis_time_limit": ("synthesis", "time_limit"),
         }
 
         for cli_key, (path, attr) in mapping.items():
@@ -244,7 +263,7 @@ class LipConfig:
             setattr(obj, attr, value)
 
         # Top-level scalars
-        for key in ("receptor_pdb", "pocket_center", "output_dir", "scoring_method"):
+        for key in ("receptor_pdb", "pocket_center", "auto_pocket", "output_dir", "scoring_method"):
             value = cli_args.get(key)
             if value is not None:
                 setattr(self, key, value)

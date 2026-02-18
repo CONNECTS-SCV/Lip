@@ -92,7 +92,7 @@ class ComponentBuilder:
         self.config = config
 
     def build_all(self, constraints: list[tuple[str, float, Any]]) -> list[ScoringComponent]:
-        """Build all ScoringComponents from constraints + docking.
+        """Build all ScoringComponents from constraints + docking + interactions.
 
         Args:
             constraints: List of (type_name, weight, constraint_instance) tuples.
@@ -111,6 +111,10 @@ class ComponentBuilder:
         if docking_comp is not None:
             components.append(docking_comp)
 
+        interaction_comp = self.build_interaction_component()
+        if interaction_comp is not None:
+            components.append(interaction_comp)
+
         return components
 
     def constraint_to_component(
@@ -123,8 +127,8 @@ class ComponentBuilder:
             return None
         return factory(constraint.params, weight)
 
-    def build_docking_component(self) -> ScoringComponent | None:
-        """Build docking ExternalProcess component if docking is enabled."""
+    def _docking_args(self) -> str | None:
+        """Build shared args string for docking ExternalProcess."""
         cfg = self.config
         if not cfg.docking.enabled or not cfg.receptor_pdb:
             return None
@@ -142,13 +146,46 @@ class ComponentBuilder:
             f"--exhaustiveness {cfg.docking.exhaustiveness}"
         )
 
+        if cfg.docking.analyze_interactions:
+            args += " --analyze-interactions"
+
+        return args
+
+    def build_docking_component(self) -> ScoringComponent | None:
+        """Build docking ExternalProcess component if docking is enabled."""
+        args = self._docking_args()
+        if args is None:
+            return None
+
         return external_process_component(
             executable=sys.executable,
             args=args,
             property_name="docking_score",
-            weight=cfg.docking.weight,
+            weight=self.config.docking.weight,
             transform=reinvent_reverse_sigmoid(
-                high=cfg.docking.transform.high,
-                low=cfg.docking.transform.low,
+                high=self.config.docking.transform.high,
+                low=self.config.docking.transform.low,
             ),
+        )
+
+    def build_interaction_component(self) -> ScoringComponent | None:
+        """Build interaction count ExternalProcess component if enabled.
+
+        Uses the same executable+args as docking so REINVENT4 groups them
+        into a single subprocess call, reading different properties.
+        """
+        cfg = self.config
+        if not cfg.docking.analyze_interactions:
+            return None
+
+        args = self._docking_args()
+        if args is None:
+            return None
+
+        return external_process_component(
+            executable=sys.executable,
+            args=args,
+            property_name="interaction_count",
+            weight=cfg.docking.interaction_weight,
+            transform={"type": "sigmoid", "low": 0.0, "high": 10.0, "k": 0.4},
         )
