@@ -213,6 +213,17 @@ class OptimizationLoop:
             )
             process.wait()
 
+            if process.returncode != 0:
+                stderr = process.stderr.read().decode() if process.stderr else ""
+                stdout = process.stdout.read().decode() if process.stdout else ""
+                log.error(
+                    f"REINVENT4 exited with code {process.returncode}\n"
+                    f"  stderr: {stderr[-1000:]}\n"
+                    f"  stdout: {stdout[-500:]}"
+                )
+            else:
+                log.info(f"REINVENT4 chunk {chunk_idx} completed successfully")
+
             # Parse RL CSV for per-step scores and molecules
             chunk_molecules: list[dict[str, Any]] = []
             step_scores: list[float] = []
