@@ -49,7 +49,7 @@ class OptimizationConfig:
     n_molecules_per_round: int = 500
     n_rounds: int = 50
     diversity_threshold: float = 0.4
-    checkpoint_every: int = 5
+    checkpoint_every: int = 1
     early_stop_threshold: float = 0.001
 
 
