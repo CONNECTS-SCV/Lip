@@ -63,7 +63,7 @@ def run_pocket2mol(
     if not os.path.isfile(pdb_path):
         raise FileNotFoundError(f"PDB file not found: {pdb_path}")
 
-    ckpt_path = os.path.join(pocket2mol_dir, "ckpt", "pretrained.pt")
+    ckpt_path = os.path.join(pocket2mol_dir, "ckpt", "pretrained_Pocket2Mol.pt")
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(
             f"Pretrained model not found: {ckpt_path}\n"
