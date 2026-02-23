@@ -60,9 +60,18 @@ REINVENT4 기반 분자 생성 → 도킹/스코어링 → 최적화 파이프�
 
 ---
 
+## 🚨 서버 배포 시 필수 조치
+
+### gemmi 패키지 설치
+- **문제**: 서버 테스트 결과 ALL docking이 `No module named 'gemmi'`로 실패
+- **원인**: `meeko` (SMILES→PDBQT 변환) 내부에서 `gemmi`를 import하는데 서버에 미설치
+- **해결**: `pip install gemmi` (requirements.txt에 추가 완료)
+
+---
+
 ## 🔍 서버에서 확인 필요 사항
 
-### Docking 점수 확인
+### Docking 점수 확인 (gemmi 설치 후)
 - 수정 전: `docking_raw=0.0`, `docking_score=0.000010` (모든 도킹 실패)
 - 수정 후 예상: `docking_raw=-8.5`, `docking_score=0.4~0.8` (정상 바인딩)
 - stderr에 `[LIP-DOCK]` 로그로 성공/실패 통계 확인 가능

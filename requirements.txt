@@ -5,6 +5,7 @@
 numpy
 rdkit
 meeko
+gemmi
 vina
 pyyaml
 

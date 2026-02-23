@@ -122,13 +122,10 @@ def run_pocket2mol(
             f"Try reducing n_samples or increasing timeout."
         )
 
-    if result.returncode != 0:
+    if result.stderr:
         log.error(f"Pocket2Mol stderr: {result.stderr}")
-        raise RuntimeError(f"Pocket2Mol failed (exit {result.returncode}): {result.stderr}")
 
-    log.info(f"Pocket2Mol stdout: {result.stdout[:500]}")
-
-    # Collect SDF files from output
+    # Collect SDF files from output (even if exit code != 0)
     sdf_files = _collect_sdf_files(abs_output)
 
     if not sdf_files:
@@ -136,6 +133,18 @@ def run_pocket2mol(
         smiles_path = os.path.join(abs_output, "SMILES.txt")
         if os.path.isfile(smiles_path):
             sdf_files = _smiles_to_sdfs(smiles_path, abs_output, n_samples)
+
+    if result.returncode != 0:
+        if sdf_files:
+            log.warning(
+                f"Pocket2Mol exited with code {result.returncode} "
+                f"but produced {len(sdf_files)} molecules — continuing"
+            )
+        else:
+            raise RuntimeError(
+                f"Pocket2Mol failed (exit {result.returncode}) "
+                f"with no output: {result.stderr[-500:]}"
+            )
 
     log.info(f"Pocket2Mol generated {len(sdf_files)} molecules")
     return sdf_files
