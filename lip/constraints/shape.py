@@ -109,11 +109,8 @@ class ShapeSimilarityConstraint(BaseConstraint):
             )
             raw_values.append(best_sim)
 
-            if mode == "maximize":
-                scores.append(best_sim)
-                passed.append(best_sim >= self.threshold)
-            else:
-                scores.append(1.0 - best_sim)
-                passed.append(best_sim <= self.threshold)
+            score, did_pass = self.apply_mode(best_sim, self.threshold, mode)
+            scores.append(score)
+            passed.append(did_pass)
 
         return ConstraintResult(scores=scores, passed=passed, raw_values=raw_values)

@@ -8,8 +8,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lip.config import LipConfig, ConstraintConfig
+from lip.config import LipConfig
 from lip.loop import OptimizationLoop, RoundResult, RunState
+from lip.utils.geometry import sdf_centroid, pdbqt_centroid
 from lip.utils.io import save_json
 
 log = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ def _run_pocket2mol(config: LipConfig) -> None:
         pocket2mol_dir=config.paths.pocket2mol_dir,
         conda_env=config.pocket2mol.conda_env,
         timeout=config.pocket2mol.timeout,
+        device=config.generator.device,
     )
 
     if not sdf_paths:
@@ -154,16 +156,14 @@ def _run_pocket2mol(config: LipConfig) -> None:
     combined_sdf = str(Path(config.output_dir) / "pocket2mol" / "reference.sdf")
     combine_sdfs(selected, combined_sdf)
 
-    # Auto-inject shape_similarity constraint
-    config.constraints.append(ConstraintConfig(
-        type="shape",
-        weight=config.pocket2mol.shape_weight,
-        params={"reference_sdf": combined_sdf, "mode": "maximize"},
-    ))
+    # 기존 shape constraint에 reference_sdf 주입 (새로 append하지 않음)
+    shape_cc = _find_shape_constraint_without_reference(config)
+    shape_cc.params["reference_sdf"] = combined_sdf
+    shape_cc.params.setdefault("mode", "maximize")
 
     log.info(
         f"Pocket2Mol: {len(sdf_paths)} generated, {len(selected)} selected, "
-        f"shape constraint injected (weight={config.pocket2mol.shape_weight})"
+        f"shape reference injected (weight={shape_cc.weight})"
     )
 
 
@@ -199,7 +199,7 @@ def _dock_and_extract_pocket(config: LipConfig) -> None:
     log.info(f"Docking ligand {config.ligand_sdf} into {config.receptor_pdb}...")
 
     # 1. SDF에서 리간드 centroid 계산 → 초기 docking center
-    sdf_center = _compute_sdf_centroid(config.ligand_sdf)
+    sdf_center = sdf_centroid(config.ligand_sdf)
     log.info(f"SDF ligand centroid: {sdf_center}")
 
     # 2. SDF → SMILES 변환
@@ -224,52 +224,13 @@ def _dock_and_extract_pocket(config: LipConfig) -> None:
         raise RuntimeError(f"초기 도킹 실패: {smiles}")
 
     # 4. Best pose에서 centroid 추출 → pocket_center
-    pose_center = _compute_pdbqt_centroid(result.pose_pdbqt)
+    pose_center = pdbqt_centroid(result.pose_pdbqt)
     config.pocket_center = list(pose_center)
     log.info(
         f"Pocket from docked pose (score={result.score:.2f} kcal/mol): "
         f"center={config.pocket_center}"
     )
 
-
-def _compute_sdf_centroid(sdf_path: str) -> tuple[float, float, float]:
-    """SDF 파일의 첫 번째 분자 3D 좌표에서 centroid 계산."""
-    from rdkit import Chem
-
-    suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
-    mol = next((m for m in suppl if m is not None), None)
-    if mol is None or mol.GetNumConformers() == 0:
-        raise RuntimeError(f"SDF에서 3D 좌표를 읽을 수 없습니다: {sdf_path}")
-
-    conf = mol.GetConformer()
-    xs, ys, zs = [], [], []
-    for i in range(mol.GetNumAtoms()):
-        pos = conf.GetAtomPosition(i)
-        xs.append(pos.x)
-        ys.append(pos.y)
-        zs.append(pos.z)
-    n = len(xs)
-    return (sum(xs) / n, sum(ys) / n, sum(zs) / n)
-
-
-def _compute_pdbqt_centroid(pdbqt_string: str) -> tuple[float, float, float]:
-    """PDBQT 문자열에서 ATOM/HETATM 좌표의 centroid 계산."""
-    xs, ys, zs = [], [], []
-    for line in pdbqt_string.split("\n"):
-        if line.startswith("ATOM") or line.startswith("HETATM"):
-            try:
-                x = float(line[30:38])
-                y = float(line[38:46])
-                z = float(line[46:54])
-                xs.append(x)
-                ys.append(y)
-                zs.append(z)
-            except (ValueError, IndexError):
-                continue
-    if not xs:
-        raise RuntimeError("PDBQT에서 원자 좌표를 찾을 수 없습니다")
-    n = len(xs)
-    return (sum(xs) / n, sum(ys) / n, sum(zs) / n)
 
 
 def _run_synthesis_analysis(

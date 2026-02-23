@@ -283,6 +283,16 @@ def _str_to_bool(v: str) -> bool:
     return v.lower() in ("true", "1", "yes")
 
 
+def _get_weight(parts: list[str], idx: int, default: float = 1.0) -> float:
+    """parts[idx]를 float로 파싱. 인덱스 초과 또는 변환 실패 시 default 반환."""
+    if len(parts) > idx:
+        try:
+            return float(parts[idx])
+        except ValueError:
+            return default
+    return default
+
+
 def _args_to_dict(args: argparse.Namespace) -> dict:
     """Convert argparse Namespace to dict, excluding None values and internals."""
     d = {}
@@ -309,8 +319,11 @@ def _parse_cli_constraints(specs: list[str]) -> list:
     Formats:
         property_range:molecular_weight:200:500:0.1:1.0
         qed:1.0
+        sa:0.8
         similarity:CCO:maximize:0.5
         smarts:[NH2]:true:1.0
+        shape:refs.sdf:maximize:0.6
+        shape:CCO:maximize:0.6
     """
     from lip.config import ConstraintConfig
 
@@ -322,7 +335,7 @@ def _parse_cli_constraints(specs: list[str]) -> list:
         if ctype == "property_range" and len(parts) >= 5:
             constraints.append(ConstraintConfig(
                 type="property_range",
-                weight=float(parts[5]) if len(parts) > 5 else 1.0,
+                weight=_get_weight(parts, 5),
                 params={
                     "property": parts[1],
                     "min": float(parts[2]),
@@ -333,17 +346,17 @@ def _parse_cli_constraints(specs: list[str]) -> list:
         elif ctype == "qed":
             constraints.append(ConstraintConfig(
                 type="qed",
-                weight=float(parts[1]) if len(parts) > 1 else 1.0,
+                weight=_get_weight(parts, 1),
             ))
         elif ctype == "sa":
             constraints.append(ConstraintConfig(
                 type="sa",
-                weight=float(parts[1]) if len(parts) > 1 else 1.0,
+                weight=_get_weight(parts, 1),
             ))
         elif ctype == "similarity" and len(parts) >= 2:
             constraints.append(ConstraintConfig(
                 type="similarity",
-                weight=float(parts[3]) if len(parts) > 3 else 1.0,
+                weight=_get_weight(parts, 3),
                 params={
                     "reference_smiles": parts[1],
                     "mode": parts[2] if len(parts) > 2 else "maximize",
@@ -352,12 +365,33 @@ def _parse_cli_constraints(specs: list[str]) -> list:
         elif ctype == "smarts" and len(parts) >= 2:
             constraints.append(ConstraintConfig(
                 type="smarts",
-                weight=float(parts[3]) if len(parts) > 3 else 1.0,
+                weight=_get_weight(parts, 3),
                 params={
                     "pattern": parts[1],
                     "must_match": parts[2].lower() != "false" if len(parts) > 2 else True,
                 },
             ))
+        elif ctype == "shape":
+            # shape:0.6 → 가중치만 (reference는 파이프라인이 Pocket2Mol로 자동 주입)
+            # shape:refs.sdf:0.6 → 직접 SDF 지정
+            if len(parts) == 2 and not parts[1].endswith(".sdf"):
+                constraints.append(ConstraintConfig(
+                    type="shape",
+                    weight=float(parts[1]),
+                    params={"mode": "maximize"},
+                ))
+            elif len(parts) >= 2 and parts[1].endswith(".sdf"):
+                constraints.append(ConstraintConfig(
+                    type="shape",
+                    weight=_get_weight(parts, 2),
+                    params={"reference_sdf": parts[1], "mode": "maximize"},
+                ))
+            else:
+                constraints.append(ConstraintConfig(
+                    type="shape",
+                    weight=1.0,
+                    params={"mode": "maximize"},
+                ))
         else:
             logging.getLogger(__name__).warning(f"Unknown constraint spec: {spec}")
 

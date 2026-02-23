@@ -50,6 +50,7 @@ class OptimizationConfig:
     n_rounds: int = 50
     diversity_threshold: float = 0.4
     checkpoint_every: int = 5
+    early_stop_threshold: float = 0.001
 
 
 @dataclass
@@ -68,6 +69,7 @@ class DockingConfig:
     # Interaction analysis
     analyze_interactions: bool = True
     interaction_weight: float = 0.3
+    interaction_norm_max: float = 10.0
 
 
 @dataclass

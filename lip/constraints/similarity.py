@@ -53,10 +53,9 @@ class SimilarityConstraint(BaseConstraint):
         fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits)
         sim = DataStructs.TanimotoSimilarity(ref_fp, fp)
 
-        if mode == "maximize":
-            return sim, sim >= self.threshold, sim
-        elif mode == "minimize":
-            return 1.0 - sim, sim <= self.threshold, sim
+        if mode in ("maximize", "minimize"):
+            score, did_pass = self.apply_mode(sim, self.threshold, mode)
+            return score, did_pass, sim
         elif mode == "range":
             if min_sim <= sim <= max_sim:
                 return 1.0, True, sim

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import csv
 import logging
-import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from lip.config import LipConfig
 from lip.component_builder import ComponentBuilder
+from lip.inception import InceptionBuffer
 from lip.constraints.base import ConstraintResult
 from lip.constraints.registry import create_constraint
 from lip.generator.reinvent import ReinventWrapper, StageConfig
@@ -156,10 +156,12 @@ class OptimizationLoop:
         n_chunks = n_steps
 
         all_results: list[RoundResult] = []
-        inception_buffer: list[dict[str, Any]] = []
-        inception_enabled = self.config.optimization.inception.memory_size > 0
-        retention_mode = self.config.optimization.inception.retention
         memory_size = self.config.optimization.inception.memory_size
+        inception_enabled = memory_size > 0
+        inception = InceptionBuffer(
+            memory_size=memory_size,
+            retention=self.config.optimization.inception.retention,
+        )
         steps_completed = self.state.current_chunk
 
         for chunk_idx in range(self.state.current_chunk, n_chunks):
@@ -170,12 +172,13 @@ class OptimizationLoop:
 
             # Write inception buffer as seed CSV for REINVENT4
             inception_file = None
-            if inception_enabled and inception_buffer:
+            if inception_enabled and inception.size > 0:
+                entries = inception.get_entries()
                 compatible = [
-                    e for e in inception_buffer
+                    e for e in entries
                     if is_reinvent_compatible(e["smiles"])
                 ]
-                n_filtered = len(inception_buffer) - len(compatible)
+                n_filtered = len(entries) - len(compatible)
                 if n_filtered > 0:
                     log.info(
                         f"Inception filter: removed {n_filtered} "
@@ -250,35 +253,10 @@ class OptimizationLoop:
 
             # Update inception buffer
             if inception_enabled and chunk_molecules:
-                # Dedup new molecules (keep highest score per SMILES)
-                seen: dict[str, dict[str, Any]] = {}
-                for mol in chunk_molecules:
-                    smi = mol["smiles"]
-                    if smi not in seen or mol["score"] > seen[smi]["score"]:
-                        seen[smi] = {"smiles": smi, "score": mol["score"]}
-
-                # Merge with existing buffer
-                buffer_map = {e["smiles"]: e for e in inception_buffer}
-                for entry in seen.values():
-                    smi = entry["smiles"]
-                    if smi not in buffer_map or entry["score"] > buffer_map[smi]["score"]:
-                        buffer_map[smi] = entry
-
-                all_entries = list(buffer_map.values())
-
-                # Apply retention policy
-                if len(all_entries) > memory_size:
-                    if retention_mode == "random":
-                        inception_buffer = random.sample(all_entries, memory_size)
-                    else:  # "top"
-                        all_entries.sort(key=lambda e: e["score"], reverse=True)
-                        inception_buffer = all_entries[:memory_size]
-                else:
-                    inception_buffer = all_entries
-
+                n_added = inception.update(chunk_molecules)
                 log.info(
-                    f"Inception buffer: {len(inception_buffer)}/{memory_size} "
-                    f"(+{len(seen)} new, mode={retention_mode})"
+                    f"Inception buffer: {inception.size}/{memory_size} "
+                    f"(+{n_added} new, mode={inception.retention})"
                 )
 
             # Load checkpoint for next chunk
@@ -490,7 +468,7 @@ class OptimizationLoop:
                 count = report.total_count
                 r.interaction_count = count
 
-                norm = min(1.0, count / 10.0)
+                norm = min(1.0, count / self.config.docking.interaction_norm_max)
                 scores.append(norm)
                 passed.append(count > 0)
                 raw_counts.append(count)
@@ -611,7 +589,7 @@ class OptimizationLoop:
         if len(results) >= patience:
             recent = results[-patience:]
             scores = [r.best_score for r in recent]
-            if max(scores) - min(scores) < 0.001:
+            if max(scores) - min(scores) < self.config.optimization.early_stop_threshold:
                 return True
 
         return False

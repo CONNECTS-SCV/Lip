@@ -59,6 +59,13 @@ class BaseConstraint(ABC):
             f"{self.__class__.__name__} must implement _score_mol() or override score()"
         )
 
+    @staticmethod
+    def apply_mode(value: float, threshold: float, mode: str) -> tuple[float, bool]:
+        """mode에 따라 score/passed 계산."""
+        if mode == "minimize":
+            return 1.0 - value, value <= threshold
+        return value, value >= threshold
+
     @classmethod
     def get_name(cls) -> str:
         """Return the registered name of this constraint."""

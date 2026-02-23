@@ -20,6 +20,7 @@ optimization:
   n_rounds: 50
   diversity_threshold: 0.4
   checkpoint_every: 5
+  early_stop_threshold: 0.001
 
 docking:
   enabled: true
@@ -31,6 +32,7 @@ docking:
     low: -12.0
   analyze_interactions: true
   interaction_weight: 0.3
+  interaction_norm_max: 10.0
 
 filter:
   lipinski: true

@@ -29,6 +29,7 @@ def run_pocket2mol(
     pocket2mol_dir: str = "",
     conda_env: str = "pocket2mol",
     timeout: int = 600,
+    device: str = "cuda",
 ) -> list[str]:
     """Run Pocket2Mol to generate reference molecules.
 
@@ -101,7 +102,7 @@ def run_pocket2mol(
         "--center", ",".join(str(c) for c in pocket_center),
         "--bbox_size", str(bbox_size),
         "--config", config_path,
-        "--device", "cuda",
+        "--device", device,
         "--outdir", abs_output,
     ]
 

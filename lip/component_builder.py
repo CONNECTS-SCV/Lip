@@ -22,7 +22,7 @@ from lip.generator.reinvent import (
     external_process_component,
     shape_similarity_component,
 )
-from lip.utils.math import reinvent_reverse_sigmoid
+from lip.utils.math import reinvent_reverse_sigmoid, reinvent_sigmoid
 
 log = logging.getLogger(__name__)
 
@@ -187,5 +187,9 @@ class ComponentBuilder:
             args=args,
             property_name="interaction_count",
             weight=cfg.docking.interaction_weight,
-            transform={"type": "sigmoid", "low": 0.0, "high": 10.0, "k": 0.4},
+            transform=reinvent_sigmoid(
+                low=0.0,
+                high=cfg.docking.interaction_norm_max,
+                k=0.4,
+            ),
         )
