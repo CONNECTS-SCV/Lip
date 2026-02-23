@@ -198,7 +198,11 @@ class ReinventWrapper(BaseGenerator):
             agent_path = Path(self.work_dir) / "agent.model"
             if self.prior_model and Path(self.prior_model).exists():
                 shutil.copy2(self.prior_model, agent_path)
-            self.agent_model = str(agent_path)
+                self.agent_model = str(agent_path)
+            else:
+                # prior가 특수값(.reinvent 등)이면 REINVENT4가 내부 resolve하므로
+                # agent에도 동일값 사용
+                self.agent_model = self.prior_model
 
     def sample(self, n: int) -> GenerationResult:
         """Sample n molecules from the current agent via REINVENT4 sampling mode."""
