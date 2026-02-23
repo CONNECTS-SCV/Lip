@@ -1,28 +1,18 @@
-# =============================================================================
-# Lip - Required Dependencies
+# Lip - Main Environment (Python >= 3.10)
 # =============================================================================
 
-# Core (필수 - 없으면 실행 불가)
+# Core
 numpy
 rdkit
 meeko
 vina
 pyyaml
 
-# =============================================================================
-# Optional Dependencies (특정 기능 사용 시)
-# =============================================================================
+# Molecular Generator (RL engine)
+reinvent
 
-# 합성 가능성 분석 (lip/scoring/synthesis.py)
+# External CLI (conda install 필요)
+# openbabel  →  conda install -c conda-forge openbabel
+
+# Optional: Synthesis Analysis
 # aizynthfinder
-
-# =============================================================================
-# External CLI Tools (pip이 아닌 별도 설치 필요)
-# =============================================================================
-#
-# Open Babel (obabel)  - PDBQT/PDB 변환
-#   conda install -c conda-forge openbabel
-#
-# REINVENT4           - 분자 생성/RL 엔진
-#   https://github.com/MolecularAI/REINVENT4
-#   pip install reinvent

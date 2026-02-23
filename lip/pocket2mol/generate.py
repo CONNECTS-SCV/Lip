@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -43,54 +44,139 @@ def run_pocket2mol(
 
     Returns:
         List of SDF file paths for generated molecules.
+
+    Raises:
+        FileNotFoundError: PDB file or Pocket2Mol directory not found.
+        RuntimeError: Pocket2Mol execution failed.
     """
     if not pocket2mol_dir:
         log.error("pocket2mol_dir not specified")
         return []
 
+    if not os.path.isdir(pocket2mol_dir):
+        raise FileNotFoundError(
+            f"Pocket2Mol directory not found: {pocket2mol_dir}\n"
+            f"Run: bash scripts/setup_pocket2mol.sh"
+        )
+
+    if not os.path.isfile(pdb_path):
+        raise FileNotFoundError(f"PDB file not found: {pdb_path}")
+
+    ckpt_path = os.path.join(pocket2mol_dir, "ckpt", "pretrained.pt")
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(
+            f"Pretrained model not found: {ckpt_path}\n"
+            f"Download from: https://drive.google.com/drive/folders/1KfdOczjUPITPhIvCuBmnj4xFTV-iI2xB"
+        )
+
+    base_config_path = os.path.join(pocket2mol_dir, "configs", "sample_for_pdb.yml")
+
     output_dir = output_dir or tempfile.mkdtemp(prefix="lip_p2m_")
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    abs_pdb = os.path.abspath(pdb_path)
+    abs_output = os.path.abspath(output_dir)
+
+    # Patch n_samples/beam_size into config
+    with open(base_config_path) as f:
+        config_text = f.read()
+    config_text = re.sub(r"num_samples:\s*\d+", f"num_samples: {n_samples}", config_text)
+    config_text = re.sub(r"beam_size:\s*\d+", f"beam_size: {n_samples * 2}", config_text)
+    config_path = os.path.join(abs_output, "sample_config.yml")
+    with open(config_path, "w") as f:
+        f.write(config_text)
 
     python_bin = _find_conda_python(conda_env)
     if not python_bin:
         log.error(f"Could not find Python in conda env '{conda_env}'")
         return []
 
-    # Set env to avoid threading issues
     env = os.environ.copy()
-    env["OMP_NUM_THREADS"] = "1"
-    env["OPENBLAS_NUM_THREADS"] = "1"
     env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
-    cx, cy, cz = pocket_center
-    beam_size = n_samples * 2
 
     cmd = [
         python_bin,
-        os.path.join(pocket2mol_dir, "sample.py"),
-        "--pdb_path", pdb_path,
-        "--center", str(cx), str(cy), str(cz),
+        os.path.join(pocket2mol_dir, "sample_for_pdb.py"),
+        "--pdb_path", abs_pdb,
+        "--center", ",".join(str(c) for c in pocket_center),
         "--bbox_size", str(bbox_size),
-        "--n_samples", str(n_samples),
-        "--beam_size", str(beam_size),
-        "--result_path", output_dir,
+        "--config", config_path,
+        "--device", "cuda",
+        "--outdir", abs_output,
     ]
 
     try:
-        log.info(f"Running Pocket2Mol: {' '.join(cmd[:5])}...")
+        log.info(f"Running Pocket2Mol: {' '.join(cmd)}")
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=pocket2mol_dir,
+            env=env,
         )
-        if result.returncode != 0:
-            log.error(f"Pocket2Mol failed: {result.stderr[:500]}")
-            return []
     except subprocess.TimeoutExpired:
-        log.error(f"Pocket2Mol timed out after {timeout}s")
-        return []
+        raise RuntimeError(
+            f"Pocket2Mol timed out after {timeout}s. "
+            f"Try reducing n_samples or increasing timeout."
+        )
 
-    # Collect output SDFs
-    sdf_files = sorted(Path(output_dir).glob("*.sdf"))
-    return [str(f) for f in sdf_files]
+    if result.returncode != 0:
+        log.error(f"Pocket2Mol stderr: {result.stderr}")
+        raise RuntimeError(f"Pocket2Mol failed (exit {result.returncode}): {result.stderr}")
+
+    log.info(f"Pocket2Mol stdout: {result.stdout[:500]}")
+
+    # Collect SDF files from output
+    sdf_files = _collect_sdf_files(abs_output)
+
+    if not sdf_files:
+        # Fallback: Pocket2Mol outputs SMILES.txt — convert to SDF
+        smiles_path = os.path.join(abs_output, "SMILES.txt")
+        if os.path.isfile(smiles_path):
+            sdf_files = _smiles_to_sdfs(smiles_path, abs_output, n_samples)
+
+    log.info(f"Pocket2Mol generated {len(sdf_files)} molecules")
+    return sdf_files
+
+
+def _collect_sdf_files(output_dir: str) -> list[str]:
+    """Collect valid SDF files from output directory."""
+    sdf_paths = []
+    for root, _dirs, files in os.walk(output_dir):
+        for f in sorted(files):
+            if f.endswith(".sdf"):
+                path = os.path.join(root, f)
+                try:
+                    supplier = Chem.SDMolSupplier(path, removeHs=False)
+                    valid = any(m is not None for m in supplier)
+                    if valid:
+                        sdf_paths.append(path)
+                except Exception:
+                    continue
+    return sdf_paths
+
+
+def _smiles_to_sdfs(smiles_path: str, output_dir: str, max_n: int) -> list[str]:
+    """Convert SMILES.txt to individual SDF files (fallback)."""
+    sdf_paths = []
+    with open(smiles_path) as f:
+        for i, line in enumerate(f):
+            if i >= max_n:
+                break
+            smi = line.strip()
+            if not smi:
+                continue
+            sdf_path = os.path.join(output_dir, f"mol_{i:03d}.sdf")
+            mol = Chem.MolFromSmiles(smi)
+            if mol is not None:
+                conf_mol = generate_conformer(smi)
+                if conf_mol is not None:
+                    writer = Chem.SDWriter(sdf_path)
+                    writer.write(conf_mol)
+                    writer.close()
+                    sdf_paths.append(sdf_path)
+    return sdf_paths
 
 
 def _find_conda_python(env_name: str) -> str | None:
