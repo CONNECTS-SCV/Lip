@@ -27,7 +27,7 @@ def run_pocket2mol(
     n_samples: int = 3,
     output_dir: str | None = None,
     pocket2mol_dir: str = "",
-    conda_env: str = "pocket2mol",
+    conda_env: str = "Pocket2Mol",
     timeout: int = 600,
     device: str = "cuda",
 ) -> list[str]:

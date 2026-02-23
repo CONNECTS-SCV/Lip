@@ -91,7 +91,7 @@ class Pocket2MolConfig:
     n_samples: int = 3
     bbox_size: float = 23.0
     shape_weight: float = 0.6
-    conda_env: str = "pocket2mol"
+    conda_env: str = "Pocket2Mol"
     timeout: int = 600
 
 
