@@ -16,6 +16,10 @@ from lip.generator.reinvent import (
     ScoringComponent,
     mw_component,
     logp_component,
+    tpsa_component,
+    hbd_component,
+    hba_component,
+    rotbond_component,
     qed_component,
     sa_component,
     similarity_component,
@@ -51,6 +55,10 @@ def _property_range_to_component(params: dict, weight: float) -> ScoringComponen
     prop_map = {
         "molecular_weight": lambda: mw_component(lo, hi, weight),
         "logp": lambda: logp_component(lo, hi, weight),
+        "tpsa": lambda: tpsa_component(lo, hi, weight),
+        "hbd": lambda: hbd_component(hi, weight),
+        "hba": lambda: hba_component(hi, weight),
+        "rotatable_bonds": lambda: rotbond_component(hi, weight),
     }
     factory = prop_map.get(prop)
     return factory() if factory else None

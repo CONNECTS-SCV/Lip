@@ -222,7 +222,7 @@ class ReinventWrapper(BaseGenerator):
         config_path = Path(self.work_dir) / "sample_config.toml"
         config_path.write_text(toml_str)
 
-        cmd = [sys.executable, "-m", "reinvent", "--config", str(config_path)]
+        cmd = [sys.executable, "-m", "reinvent", str(config_path)]
         timeout = min(max(60, n // 2), 600)
 
         try:
@@ -285,7 +285,7 @@ class ReinventWrapper(BaseGenerator):
 
         cmd = [
             sys.executable, "-m", "reinvent",
-            "--config", str(toml_path),
+            str(toml_path),
         ]
 
         log.info(f"Starting REINVENT4: {' '.join(cmd)}")
