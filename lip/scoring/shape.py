@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+
+# Ensure project root is in sys.path (needed when run as ExternalProcess by REINVENT4)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 
