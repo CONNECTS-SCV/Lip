@@ -208,7 +208,12 @@ class VinaDockingScorer(BaseDockingScorer):
 
 def vina_external_process_main():
     """CLI entry point for Vina as REINVENT4 ExternalProcess."""
+    import io
     import argparse
+
+    # Save real stdout, redirect to buffer to prevent stray output
+    _real_stdout = sys.stdout
+    sys.stdout = io.StringIO()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--receptor", required=True)
@@ -221,6 +226,14 @@ def vina_external_process_main():
 
     center = tuple(float(x) for x in args.center.split(","))
     box_size = tuple(float(x) for x in args.box_size.split(","))
+
+    # Read SMILES from stdin (plain text, one per line)
+    smiles_list = [line.strip() for line in sys.stdin if line.strip()]
+
+    if not smiles_list:
+        sys.stdout = _real_stdout
+        print(json.dumps({"version": 1, "payload": {"docking_score": []}}))
+        return
 
     scorer = VinaDockingScorer(
         receptor_pdb=args.receptor,
@@ -238,48 +251,40 @@ def vina_external_process_main():
         except Exception as e:
             log.warning(f"Could not load protein mol for interaction analysis: {e}")
 
-    # REINVENT4 ExternalProcess protocol: read JSON from stdin
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    docking_scores = []
+    interaction_counts = []
 
-        request = json.loads(line)
-        smiles_list = request.get("smiles", [])
+    for smi in smiles_list:
+        result = scorer.dock_smiles(smi)
+        docking_scores.append(result.score)
 
-        docking_scores = []
-        interaction_counts = []
-
-        for smi in smiles_list:
-            result = scorer.dock_smiles(smi)
-            docking_scores.append(result.score)
-
-            if args.analyze_interactions and result.success and result.pose_pdbqt:
-                try:
-                    from lip.scoring.interactions import analyze_pose
-                    report = analyze_pose(
-                        protein_pdb=args.receptor,
-                        pose_pdbqt=result.pose_pdbqt,
-                        smiles=smi,
-                        protein_mol=protein_mol,
-                    )
-                    interaction_counts.append(report.total_count)
-                except Exception:
-                    interaction_counts.append(0)
-            else:
+        if args.analyze_interactions and result.success and result.pose_pdbqt:
+            try:
+                from lip.scoring.interactions import analyze_pose
+                report = analyze_pose(
+                    protein_pdb=args.receptor,
+                    pose_pdbqt=result.pose_pdbqt,
+                    smiles=smi,
+                    protein_mol=protein_mol,
+                )
+                interaction_counts.append(report.total_count)
+            except Exception:
                 interaction_counts.append(0)
+        else:
+            interaction_counts.append(0)
 
-        response = {
-            "version": 1,
-            "payload": {
-                "docking_score": docking_scores,
-            },
-        }
+    response = {
+        "version": 1,
+        "payload": {
+            "docking_score": docking_scores,
+        },
+    }
 
-        if args.analyze_interactions:
-            response["payload"]["interaction_count"] = interaction_counts
+    if args.analyze_interactions:
+        response["payload"]["interaction_count"] = interaction_counts
 
-        print(json.dumps(response), flush=True)
+    sys.stdout = _real_stdout
+    print(json.dumps(response))
 
 
 # ---------------------------------------------------------------------------

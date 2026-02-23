@@ -162,52 +162,44 @@ def score_batch(
 
 def main():
     """CLI entry point for shape similarity as REINVENT4 ExternalProcess."""
+    import io
     import argparse
-    import os
+
+    # Save real stdout, redirect to buffer to prevent stray output
+    _real_stdout = sys.stdout
+    sys.stdout = io.StringIO()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference-smiles", default="")
     parser.add_argument("--reference-sdf", default="")
     parser.add_argument("--n-ref-conformers", type=int, default=10)
-    parser.add_argument(
-        "--n-workers", type=int,
-        default=max(1, min(os.cpu_count() // 4, 4)),
-    )
+    parser.add_argument("--n-workers", type=int, default=0)
     args = parser.parse_args()
 
-    # Pre-load references
-    ref_mols = None
-    ref_mol = None
+    multi_ref = bool(args.reference_sdf)
+    if not multi_ref and not args.reference_smiles:
+        sys.stdout = _real_stdout
+        print(json.dumps({"version": 1, "payload": {"shape_similarity": []}}))
+        return
 
-    if args.reference_sdf:
+    # Read SMILES from stdin (plain text, one per line)
+    smiles_list = [line.strip() for line in sys.stdin if line.strip()]
+
+    if not smiles_list:
+        sys.stdout = _real_stdout
+        print(json.dumps({"version": 1, "payload": {"shape_similarity": []}}))
+        return
+
+    # Score
+    if multi_ref:
         ref_mols = load_reference_mols_from_sdf(args.reference_sdf)
-    elif args.reference_smiles:
-        ref_mol = prepare_reference_mol(
-            args.reference_smiles, args.n_ref_conformers
-        )
+        scores = [score_smiles_multi_ref(smi, ref_mols) for smi in smiles_list]
+    else:
+        ref_mol = prepare_reference_mol(args.reference_smiles, args.n_ref_conformers)
+        scores = [score_smiles_shape(smi, ref_mol) for smi in smiles_list]
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-
-        request = json.loads(line)
-        smiles_list = request.get("smiles", [])
-
-        results = []
-        for smi in smiles_list:
-            if ref_mols:
-                results.append(score_smiles_multi_ref(smi, ref_mols))
-            elif ref_mol:
-                results.append(score_smiles_shape(smi, ref_mol))
-            else:
-                results.append(0.0)
-
-        response = {
-            "version": 1,
-            "payload": {"shape_similarity": results},
-        }
-        print(json.dumps(response), flush=True)
+    sys.stdout = _real_stdout
+    print(json.dumps({"version": 1, "payload": {"shape_similarity": scores}}))
 
 
 if __name__ == "__main__":
