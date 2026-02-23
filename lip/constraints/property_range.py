@@ -42,10 +42,11 @@ class PropertyRangeConstraint(BaseConstraint):
         if self._lo <= value <= self._hi:
             return 1.0, True, value
 
+        range_size = self._hi - self._lo if self._hi != float("inf") else 100.0
         if value < self._lo:
-            dist = (self._lo - value) / max(abs(self._lo) * self._margin, 1e-6)
+            dist = (self._lo - value) / (range_size * self._margin + 1e-8)
         else:
-            dist = (value - self._hi) / max(abs(self._hi) * self._margin, 1e-6)
+            dist = (value - self._hi) / (range_size * self._margin + 1e-8)
         return max(0.0, 1.0 - dist), False, value
 
     @classmethod

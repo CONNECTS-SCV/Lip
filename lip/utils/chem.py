@@ -43,7 +43,7 @@ def compute_properties(smiles: str) -> dict[str, Any] | None:
     if mol is None:
         return None
     return {
-        "molecular_weight": Descriptors.ExactMolWt(mol),
+        "molecular_weight": Descriptors.MolWt(mol),
         "logp": Descriptors.MolLogP(mol),
         "tpsa": Descriptors.TPSA(mol),
         "hbd": Descriptors.NumHDonors(mol),
@@ -58,7 +58,7 @@ def compute_properties(smiles: str) -> dict[str, Any] | None:
 
 
 PROPERTY_FUNCTIONS: dict[str, Any] = {
-    "molecular_weight": Descriptors.ExactMolWt,
+    "molecular_weight": Descriptors.MolWt,
     "logp": Descriptors.MolLogP,
     "tpsa": Descriptors.TPSA,
     "hbd": Descriptors.NumHDonors,
@@ -102,7 +102,7 @@ def check_lipinski(smiles: str) -> bool:
     if mol is None:
         return False
     return (
-        Descriptors.ExactMolWt(mol) <= 500
+        Descriptors.MolWt(mol) <= 500
         and Descriptors.MolLogP(mol) <= 5
         and Descriptors.NumHDonors(mol) <= 5
         and Descriptors.NumHAcceptors(mol) <= 10

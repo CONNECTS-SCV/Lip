@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from rdkit import Chem
-from rdkit.Chem import AllChem, rdShapeHelpers, rdMolAlign
+from rdkit.Chem import AllChem
 
 from lip.constraints.base import BaseConstraint, ConstraintResult
 from lip.constraints.registry import register
@@ -17,18 +17,32 @@ log = logging.getLogger(__name__)
 def _compute_shape_similarity(query_mol: Chem.Mol, ref_mol: Chem.Mol) -> float:
     """Compute shape similarity using CrippenO3A alignment.
 
+    Iterates over all conformers in ref_mol to find best alignment.
     Returns value in [0, 1] where 1 = identical shape.
     """
-    try:
-        o3a = rdMolAlign.GetCrippenO3A(query_mol, ref_mol)
-        if o3a is not None:
+    best_sim = 0.0
+    query_conf_id = 0
+
+    for ref_conf_id in range(ref_mol.GetNumConformers()):
+        try:
+            o3a = AllChem.GetCrippenO3A(
+                query_mol, ref_mol,
+                prbCid=query_conf_id,
+                refCid=ref_conf_id,
+            )
             o3a.Align()
 
-        dist = rdShapeHelpers.ShapeTanimotoDist(query_mol, ref_mol)
-        return 1.0 - dist
-    except Exception as e:
-        log.debug(f"Shape similarity failed: {e}")
-        return 0.0
+            dist = AllChem.ShapeTanimotoDist(
+                query_mol, ref_mol,
+                confId1=query_conf_id,
+                confId2=ref_conf_id,
+            )
+            sim = 1.0 - dist
+            best_sim = max(best_sim, sim)
+        except Exception:
+            continue
+
+    return best_sim
 
 
 @register("shape")

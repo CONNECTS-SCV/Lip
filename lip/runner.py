@@ -66,19 +66,16 @@ def run(config: LipConfig, resume_dir: str | None = None) -> RunResult:
     # Save config snapshot
     config.save_yaml(output_dir / "config.yaml")
 
-    # Step 0: Auto-detect pocket if needed
-    _pocket_is_default = (config.pocket_center == [0.0, 0.0, 0.0])
-    if _pocket_is_default and config.auto_pocket and config.receptor_pdb:
-        _auto_detect_pocket(config)
+    # Step 0: Determine pocket center
+    if config.pocket_center == [0.0, 0.0, 0.0] and config.receptor_pdb:
+        if config.is_docked:
+            _extract_pocket_from_pdb(config)
+        else:
+            _dock_and_extract_pocket(config)
         config.save_yaml(output_dir / "config.yaml")
-    elif _pocket_is_default and config.docking.enabled:
-        log.warning(
-            "pocket_center is [0,0,0] and auto_pocket is disabled. "
-            "Docking will use origin as center -- this is likely incorrect."
-        )
 
-    # Step 1: Pocket2Mol (optional)
-    if config.pocket2mol.enabled and config.receptor_pdb:
+    # Step 1: Pocket2Mol (3D Shape 제약조건이 있고 reference가 없을 때만)
+    if _find_shape_constraint_without_reference(config) and config.receptor_pdb:
         _run_pocket2mol(config)
 
     # Step 2: Build and run optimization loop
@@ -113,6 +110,16 @@ def run(config: LipConfig, resume_dir: str | None = None) -> RunResult:
         total_molecules=loop.state.total_molecules,
         resumed=resumed,
     )
+
+
+def _find_shape_constraint_without_reference(config: LipConfig):
+    """constraints에서 type='shape'이고 reference가 아직 없는 것을 찾는다."""
+    for cc in config.constraints:
+        if cc.type == "shape":
+            has_ref = cc.params.get("reference_sdf") or cc.params.get("reference_smiles")
+            if not has_ref:
+                return cc
+    return None
 
 
 def _run_pocket2mol(config: LipConfig) -> None:
@@ -160,64 +167,109 @@ def _run_pocket2mol(config: LipConfig) -> None:
     )
 
 
-def _auto_detect_pocket(config: LipConfig) -> None:
-    """Auto-detect pocket center from receptor PDB if not explicitly set.
+def _extract_pocket_from_pdb(config: LipConfig) -> None:
+    """PDB 내 공결정 리간드에서 포켓 중심 추출."""
+    from lip.utils.pocket import extract_ligands
 
-    Strategy:
-    1. Try extract_ligands() — co-crystallized ligand center is most reliable
-    2. Try detect_pockets() via fpocket — use highest-druggability pocket
-    3. If both fail, raise with clear message
-    """
-    from lip.utils.pocket import extract_ligands, detect_pockets
-
-    receptor = config.receptor_pdb
-    if not receptor:
+    ligands = extract_ligands(config.receptor_pdb)
+    if not ligands:
         raise RuntimeError(
-            "Cannot auto-detect pocket: no --receptor provided. "
-            "Please provide --receptor and either --pocket-center "
-            "or a PDB with a co-crystallized ligand."
+            "is_docked=True이지만 PDB에서 리간드를 찾을 수 없습니다. "
+            "PDB에 HETATM 리간드가 포함되어 있는지 확인하세요."
+        )
+    best = ligands[0]  # sorted by num_atoms descending
+    config.pocket_center = list(best.center)
+    log.info(
+        f"Pocket from co-crystal ligand {best.resname} "
+        f"(chain {best.chain}, {best.num_atoms} atoms): "
+        f"center={config.pocket_center}"
+    )
+
+
+def _dock_and_extract_pocket(config: LipConfig) -> None:
+    """SDF 리간드를 PDB에 도킹한 후, best pose에서 포켓 중심 추출."""
+    from rdkit import Chem
+    from lip.scoring.docking import VinaDockingScorer
+
+    if not config.ligand_sdf:
+        raise RuntimeError(
+            "is_docked=False이지만 --ligand-sdf가 제공되지 않았습니다."
         )
 
-    log.info(f"Auto-detecting pocket from {receptor}...")
+    log.info(f"Docking ligand {config.ligand_sdf} into {config.receptor_pdb}...")
 
-    # Strategy 1: co-crystallized ligand
-    try:
-        ligands = extract_ligands(receptor)
-        if ligands:
-            best = ligands[0]  # sorted by num_atoms descending
-            config.pocket_center = list(best.center)
-            log.info(
-                f"Pocket auto-detected from ligand "
-                f"{best.resname} (chain {best.chain}, {best.num_atoms} atoms): "
-                f"center={config.pocket_center}"
-            )
-            return
-    except Exception as e:
-        log.debug(f"Ligand extraction failed: {e}")
+    # 1. SDF에서 리간드 centroid 계산 → 초기 docking center
+    sdf_center = _compute_sdf_centroid(config.ligand_sdf)
+    log.info(f"SDF ligand centroid: {sdf_center}")
 
-    # Strategy 2: fpocket
-    try:
-        pockets = detect_pockets(receptor, fpocket_bin=config.paths.fpocket)
-        if pockets:
-            pockets_sorted = sorted(
-                pockets, key=lambda p: p.druggability, reverse=True,
-            )
-            best = pockets_sorted[0]
-            config.pocket_center = list(best.center)
-            log.info(
-                f"Pocket auto-detected via fpocket "
-                f"(rank={best.rank}, druggability={best.druggability:.3f}, "
-                f"volume={best.volume:.1f}): center={config.pocket_center}"
-            )
-            return
-    except Exception as e:
-        log.debug(f"fpocket detection failed: {e}")
+    # 2. SDF → SMILES 변환
+    suppl = Chem.SDMolSupplier(config.ligand_sdf, removeHs=True)
+    mol = next((m for m in suppl if m is not None), None)
+    if mol is None:
+        raise RuntimeError(
+            f"SDF 파일에서 분자를 읽을 수 없습니다: {config.ligand_sdf}"
+        )
+    smiles = Chem.MolToSmiles(mol)
 
-    raise RuntimeError(
-        "Pocket auto-detection failed: no co-crystallized ligands found "
-        "and fpocket detection returned no results. "
-        "Please provide --pocket-center explicitly or ensure fpocket is installed."
+    # 3. Vina로 도킹
+    box_sz = config.docking.box_size
+    scorer = VinaDockingScorer(
+        receptor_pdb=config.receptor_pdb,
+        pocket_center=tuple(sdf_center),
+        box_size=(box_sz, box_sz, box_sz),
+        exhaustiveness=config.docking.exhaustiveness,
     )
+    result = scorer.dock_smiles(smiles)
+    if not result.success:
+        raise RuntimeError(f"초기 도킹 실패: {smiles}")
+
+    # 4. Best pose에서 centroid 추출 → pocket_center
+    pose_center = _compute_pdbqt_centroid(result.pose_pdbqt)
+    config.pocket_center = list(pose_center)
+    log.info(
+        f"Pocket from docked pose (score={result.score:.2f} kcal/mol): "
+        f"center={config.pocket_center}"
+    )
+
+
+def _compute_sdf_centroid(sdf_path: str) -> tuple[float, float, float]:
+    """SDF 파일의 첫 번째 분자 3D 좌표에서 centroid 계산."""
+    from rdkit import Chem
+
+    suppl = Chem.SDMolSupplier(sdf_path, removeHs=False)
+    mol = next((m for m in suppl if m is not None), None)
+    if mol is None or mol.GetNumConformers() == 0:
+        raise RuntimeError(f"SDF에서 3D 좌표를 읽을 수 없습니다: {sdf_path}")
+
+    conf = mol.GetConformer()
+    xs, ys, zs = [], [], []
+    for i in range(mol.GetNumAtoms()):
+        pos = conf.GetAtomPosition(i)
+        xs.append(pos.x)
+        ys.append(pos.y)
+        zs.append(pos.z)
+    n = len(xs)
+    return (sum(xs) / n, sum(ys) / n, sum(zs) / n)
+
+
+def _compute_pdbqt_centroid(pdbqt_string: str) -> tuple[float, float, float]:
+    """PDBQT 문자열에서 ATOM/HETATM 좌표의 centroid 계산."""
+    xs, ys, zs = [], [], []
+    for line in pdbqt_string.split("\n"):
+        if line.startswith("ATOM") or line.startswith("HETATM"):
+            try:
+                x = float(line[30:38])
+                y = float(line[38:46])
+                z = float(line[46:54])
+                xs.append(x)
+                ys.append(y)
+                zs.append(z)
+            except (ValueError, IndexError):
+                continue
+    if not xs:
+        raise RuntimeError("PDBQT에서 원자 좌표를 찾을 수 없습니다")
+    n = len(xs)
+    return (sum(xs) / n, sum(ys) / n, sum(zs) / n)
 
 
 def _run_synthesis_analysis(

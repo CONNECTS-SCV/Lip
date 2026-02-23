@@ -17,8 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 synthesis = ["aizynthfinder"]
-dynamicbind = ["pandas"]
-all = ["aizynthfinder", "pandas"]
+all = ["aizynthfinder"]
 
 [project.scripts]
 lip = "lip.__main__:main"

@@ -23,15 +23,12 @@ optimization:
 
 docking:
   enabled: true
-  method: "vina"
   exhaustiveness: 8
   box_size: 25
   weight: 0.5
   transform:
     high: -6.0
     low: -12.0
-  cnn_scoring: "rescore"
-  score_mode: "vina"
   analyze_interactions: true
   interaction_weight: 0.3
 
@@ -49,7 +46,8 @@ constraints: []
 
 receptor_pdb: ""
 pocket_center: [0.0, 0.0, 0.0]
-auto_pocket: true
+is_docked: true
+ligand_sdf: ""
 output_dir: "results/"
 scoring_method: "weighted_sum"
 
@@ -62,6 +60,4 @@ synthesis:
 
 paths:
   pocket2mol_dir: ""
-  fpocket: ""
   aizynthfinder_config: ""
-  dynamicbind_dir: ""

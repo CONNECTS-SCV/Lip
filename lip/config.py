@@ -61,14 +61,10 @@ class DockingTransform:
 @dataclass
 class DockingConfig:
     enabled: bool = True
-    method: str = "vina"  # "vina" | "gnina"
     exhaustiveness: int = 8
     box_size: int = 25
     weight: float = 0.5
     transform: DockingTransform = field(default_factory=DockingTransform)
-    # GNINA
-    cnn_scoring: str = "rescore"  # "rescore" | "refinement" | "all"
-    score_mode: str = "vina"  # "vina" | "cnn_affinity"
     # Interaction analysis
     analyze_interactions: bool = True
     interaction_weight: float = 0.3
@@ -100,9 +96,7 @@ class Pocket2MolConfig:
 @dataclass
 class PathsConfig:
     pocket2mol_dir: str = ""
-    fpocket: str = ""
     aizynthfinder_config: str = ""
-    dynamicbind_dir: str = ""
 
 
 @dataclass
@@ -131,7 +125,8 @@ class LipConfig:
 
     receptor_pdb: str = ""
     pocket_center: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    auto_pocket: bool = True
+    is_docked: bool = True              # True: PDB에 리간드 포함, False: PDB+SDF 별도
+    ligand_sdf: str = ""                # is_docked=False일 때 리간드 SDF 경로
     output_dir: str = "results/"
     scoring_method: str = "weighted_sum"  # "weighted_sum" | "pareto"
 
@@ -196,7 +191,7 @@ class LipConfig:
             cfg.synthesis = _merge_dataclass(SynthesisConfig, data["synthesis"])
 
         # Top-level scalars
-        for key in ("receptor_pdb", "pocket_center", "auto_pocket", "output_dir", "scoring_method"):
+        for key in ("receptor_pdb", "pocket_center", "is_docked", "ligand_sdf", "output_dir", "scoring_method"):
             if key in data:
                 setattr(cfg, key, data[key])
 
@@ -227,14 +222,11 @@ class LipConfig:
             "diversity_threshold": ("optimization", "diversity_threshold"),
             "checkpoint_every": ("optimization", "checkpoint_every"),
             # Docking
-            "docking_method": ("docking", "method"),
             "exhaustiveness": ("docking", "exhaustiveness"),
             "box_size": ("docking", "box_size"),
             "docking_weight": ("docking", "weight"),
             "transform_high": ("docking.transform", "high"),
             "transform_low": ("docking.transform", "low"),
-            "cnn_scoring": ("docking", "cnn_scoring"),
-            "score_mode": ("docking", "score_mode"),
             "analyze_interactions": ("docking", "analyze_interactions"),
             "interaction_weight": ("docking", "interaction_weight"),
             # Filter
@@ -246,9 +238,7 @@ class LipConfig:
             "pocket2mol_shape_weight": ("pocket2mol", "shape_weight"),
             # Paths
             "pocket2mol_dir": ("paths", "pocket2mol_dir"),
-            "fpocket": ("paths", "fpocket"),
             "aizynthfinder_config": ("paths", "aizynthfinder_config"),
-            "dynamicbind_dir": ("paths", "dynamicbind_dir"),
             # Synthesis
             "synthesis_enabled": ("synthesis", "enabled"),
             "synthesis_top_n": ("synthesis", "top_n"),
@@ -263,7 +253,7 @@ class LipConfig:
             setattr(obj, attr, value)
 
         # Top-level scalars
-        for key in ("receptor_pdb", "pocket_center", "auto_pocket", "output_dir", "scoring_method"):
+        for key in ("receptor_pdb", "pocket_center", "is_docked", "ligand_sdf", "output_dir", "scoring_method"):
             value = cli_args.get(key)
             if value is not None:
                 setattr(self, key, value)

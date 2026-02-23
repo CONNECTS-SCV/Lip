@@ -1,9 +1,8 @@
-"""Molecular docking scorers — AutoDock Vina and GNINA.
+"""Molecular docking scorer — AutoDock Vina.
 
 Includes:
 - BaseDockingScorer: Abstract base with PDBQT preparation and receptor caching
 - VinaDockingScorer: CPU-based AutoDock Vina
-- GninaDockingScorer: GPU-accelerated CNN docking
 - ExternalProcess CLI entry points for REINVENT4 integration
 """
 
@@ -199,96 +198,6 @@ class VinaDockingScorer(BaseDockingScorer):
 
 
 # ---------------------------------------------------------------------------
-# GNINA
-# ---------------------------------------------------------------------------
-
-class GninaDockingScorer(BaseDockingScorer):
-    """GNINA GPU-accelerated docking scorer."""
-
-    def __init__(
-        self,
-        receptor_pdb: str,
-        pocket_center: tuple[float, float, float],
-        box_size: tuple[float, float, float] = (25.0, 25.0, 25.0),
-        exhaustiveness: int = 8,
-        cnn_scoring: str = "rescore",
-        score_mode: str = "vina",
-    ):
-        super().__init__(receptor_pdb, pocket_center, box_size, exhaustiveness)
-        self.cnn_scoring = cnn_scoring
-        self.score_mode = score_mode
-
-    def dock_smiles(self, smiles: str) -> DockingResult:
-        ligand_pdbqt = self.prepare_ligand_pdbqt(smiles)
-        receptor_pdbqt = self.get_receptor_pdbqt()
-
-        if ligand_pdbqt is None or receptor_pdbqt is None:
-            return DockingResult(smiles=smiles, score=0.0, success=False)
-
-        try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".pdbqt", mode="w", delete=False
-            ) as lig_f:
-                lig_f.write(ligand_pdbqt)
-                lig_path = lig_f.name
-
-            out_f = tempfile.NamedTemporaryFile(suffix=".pdbqt", delete=False)
-            out_path = out_f.name
-            out_f.close()
-
-            cx, cy, cz = self.pocket_center
-            sx, sy, sz = self.box_size
-
-            cmd = [
-                "gnina",
-                "-r", receptor_pdbqt,
-                "-l", lig_path,
-                "-o", out_path,
-                "--center_x", str(cx),
-                "--center_y", str(cy),
-                "--center_z", str(cz),
-                "--size_x", str(sx),
-                "--size_y", str(sy),
-                "--size_z", str(sz),
-                "--exhaustiveness", str(self.exhaustiveness),
-                "--cnn_scoring", self.cnn_scoring,
-                "--num_modes", "1",
-            ]
-
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300,
-            )
-
-            score = self._parse_gnina_output(result.stdout)
-            pose = Path(out_path).read_text() if Path(out_path).exists() else ""
-
-            return DockingResult(smiles=smiles, score=score, pose_pdbqt=pose)
-
-        except Exception as e:
-            log.debug(f"GNINA docking failed for {smiles}: {e}")
-            return DockingResult(smiles=smiles, score=0.0, success=False)
-        finally:
-            for p in [lig_path, out_path]:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-
-    def _parse_gnina_output(self, stdout: str) -> float:
-        """Parse GNINA stdout for best docking score."""
-        for line in stdout.split("\n"):
-            parts = line.split()
-            if len(parts) >= 4 and parts[0] == "1":
-                try:
-                    if self.score_mode == "cnn_affinity":
-                        return float(parts[2])  # CNN affinity
-                    return float(parts[1])  # Vina score
-                except (ValueError, IndexError):
-                    pass
-        return 0.0
-
-
-# ---------------------------------------------------------------------------
 # ExternalProcess CLI — for REINVENT4 integration
 # ---------------------------------------------------------------------------
 
@@ -374,7 +283,6 @@ def vina_external_process_main():
 
 DOCKING_REGISTRY: dict[str, type[BaseDockingScorer]] = {
     "vina": VinaDockingScorer,
-    "gnina": GninaDockingScorer,
 }
 
 
@@ -382,7 +290,7 @@ def create_docking_scorer(method: str, **kwargs) -> BaseDockingScorer:
     """Create a docking scorer by method name.
 
     Args:
-        method: Scorer name ("vina" or "gnina").
+        method: Scorer name ("vina").
         **kwargs: Arguments passed to the scorer constructor.
 
     Raises:

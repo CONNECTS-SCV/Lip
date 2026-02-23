@@ -15,7 +15,7 @@ from lip.constraints.base import ConstraintResult
 from lip.constraints.registry import create_constraint
 from lip.generator.reinvent import ReinventWrapper, StageConfig
 from lip.scoring.aggregator import ScoreAggregator
-from lip.scoring.docking import BaseDockingScorer, create_docking_scorer
+from lip.scoring.docking import BaseDockingScorer, VinaDockingScorer
 from lip.utils.chem import (
     is_valid, canonicalize, check_lipinski, check_pains, is_reinvent_compatible,
 )
@@ -108,20 +108,16 @@ class OptimizationLoop:
             constraint = create_constraint(cc.type, cc.weight, cc.params)
             loop.constraints.append((cc.type, cc.weight, constraint))
 
-        # Docking scorer (via registry)
+        # Docking scorer
         if config.docking.enabled and config.receptor_pdb:
             center = tuple(config.pocket_center)
             box = (config.docking.box_size,) * 3
-            kwargs = {
-                "receptor_pdb": config.receptor_pdb,
-                "pocket_center": center,
-                "box_size": box,
-                "exhaustiveness": config.docking.exhaustiveness,
-            }
-            if config.docking.method == "gnina":
-                kwargs["cnn_scoring"] = config.docking.cnn_scoring
-                kwargs["score_mode"] = config.docking.score_mode
-            loop.docking_scorer = create_docking_scorer(config.docking.method, **kwargs)
+            loop.docking_scorer = VinaDockingScorer(
+                receptor_pdb=config.receptor_pdb,
+                pocket_center=center,
+                box_size=box,
+                exhaustiveness=config.docking.exhaustiveness,
+            )
 
         return loop
 

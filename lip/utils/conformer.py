@@ -32,8 +32,11 @@ def generate_conformer(
 
     result = AllChem.EmbedMultipleConfs(mol, numConfs=n_conformers, params=params)
     if len(result) == 0:
-        log.debug(f"Conformer embedding failed for {smiles}")
-        return None
+        params.useRandomCoords = True
+        result = AllChem.EmbedMultipleConfs(mol, numConfs=n_conformers, params=params)
+        if len(result) == 0:
+            log.debug(f"Conformer embedding failed for {smiles}")
+            return None
 
     if optimize:
         for conf_id in result:

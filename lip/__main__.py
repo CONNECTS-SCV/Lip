@@ -199,9 +199,12 @@ def _add_common_args(parser: argparse.ArgumentParser):
     parser.add_argument("--device", type=str, default=None, choices=["cpu", "cuda"])
     parser.add_argument("--scoring-method", dest="scoring_method", type=str, default=None,
                         choices=["weighted_sum", "pareto"])
-    parser.add_argument("--no-auto-pocket", dest="auto_pocket",
-                        action="store_false", default=None,
-                        help="Disable automatic pocket detection from PDB")
+    parser.add_argument("--is-docked", dest="is_docked", action="store_true", default=None,
+                        help="PDB already contains docked ligand")
+    parser.add_argument("--no-docked", dest="is_docked", action="store_false",
+                        help="PDB and ligand SDF are separate (requires --ligand-sdf)")
+    parser.add_argument("--ligand-sdf", dest="ligand_sdf", type=str, default=None,
+                        help="Ligand SDF file path (required when --no-docked)")
     parser.add_argument("--log-level", dest="log_level", type=str, default="info",
                         choices=["debug", "info", "warning", "error"])
 
@@ -235,17 +238,11 @@ def _add_optimization_args(parser: argparse.ArgumentParser):
 
 def _add_docking_args(parser: argparse.ArgumentParser):
     g = parser.add_argument_group("Docking")
-    g.add_argument("--docking-method", dest="docking_method", type=str, default=None,
-                    choices=["vina", "gnina"])
     g.add_argument("--exhaustiveness", type=int, default=None)
     g.add_argument("--box-size", dest="box_size", type=int, default=None)
     g.add_argument("--docking-weight", dest="docking_weight", type=float, default=None)
     g.add_argument("--transform-high", dest="transform_high", type=float, default=None)
     g.add_argument("--transform-low", dest="transform_low", type=float, default=None)
-    g.add_argument("--cnn-scoring", dest="cnn_scoring", type=str, default=None,
-                    choices=["rescore", "refinement", "all"])
-    g.add_argument("--score-mode", dest="score_mode", type=str, default=None,
-                    choices=["vina", "cnn_affinity"])
     g.add_argument("--no-interactions", dest="analyze_interactions",
                     action="store_false", default=None)
     g.add_argument("--interaction-weight", dest="interaction_weight", type=float, default=None)
@@ -275,9 +272,7 @@ def _add_synthesis_args(parser: argparse.ArgumentParser):
 def _add_path_args(parser: argparse.ArgumentParser):
     g = parser.add_argument_group("External tool paths")
     g.add_argument("--pocket2mol-dir", dest="pocket2mol_dir", type=str, default=None)
-    g.add_argument("--fpocket", type=str, default=None)
     g.add_argument("--aizynthfinder-config", dest="aizynthfinder_config", type=str, default=None)
-    g.add_argument("--dynamicbind-dir", dest="dynamicbind_dir", type=str, default=None)
 
 
 # ---------------------------------------------------------------------------

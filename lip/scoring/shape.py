@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 
 from rdkit import Chem
-from rdkit.Chem import AllChem, rdShapeHelpers, rdMolAlign
+from rdkit.Chem import AllChem
 
 from lip.utils.conformer import generate_conformer
 
@@ -34,20 +34,39 @@ def load_reference_mols_from_sdf(sdf_path: str) -> list[Chem.Mol]:
 def score_smiles_shape(smiles: str, ref_mol: Chem.Mol) -> float:
     """Score shape similarity of a SMILES against a single reference.
 
+    Iterates over all conformers in ref_mol to find best alignment.
     Returns value in [0, 1] where 1 = identical shape.
     """
+    if ref_mol is None:
+        return 0.0
+
     query = generate_conformer(smiles, n_conformers=1)
     if query is None:
         return 0.0
 
-    try:
-        o3a = rdMolAlign.GetCrippenO3A(query, ref_mol)
-        if o3a is not None:
+    best_sim = 0.0
+    query_conf_id = 0
+
+    for ref_conf_id in range(ref_mol.GetNumConformers()):
+        try:
+            o3a = AllChem.GetCrippenO3A(
+                query, ref_mol,
+                prbCid=query_conf_id,
+                refCid=ref_conf_id,
+            )
             o3a.Align()
-        dist = rdShapeHelpers.ShapeTanimotoDist(query, ref_mol)
-        return max(0.0, 1.0 - dist)
-    except Exception:
-        return 0.0
+
+            dist = AllChem.ShapeTanimotoDist(
+                query, ref_mol,
+                confId1=query_conf_id,
+                confId2=ref_conf_id,
+            )
+            sim = max(0.0, 1.0 - dist)
+            best_sim = max(best_sim, sim)
+        except Exception:
+            continue
+
+    return best_sim
 
 
 def score_smiles_multi_ref(smiles: str, ref_mols: list[Chem.Mol]) -> float:
@@ -55,21 +74,31 @@ def score_smiles_multi_ref(smiles: str, ref_mols: list[Chem.Mol]) -> float:
     if not ref_mols:
         return 0.0
 
-    best = 0.0
     query = generate_conformer(smiles, n_conformers=1)
     if query is None:
         return 0.0
 
+    best = 0.0
+
     for ref_mol in ref_mols:
-        try:
-            o3a = rdMolAlign.GetCrippenO3A(query, ref_mol)
-            if o3a is not None:
+        for ref_conf_id in range(ref_mol.GetNumConformers()):
+            try:
+                o3a = AllChem.GetCrippenO3A(
+                    query, ref_mol,
+                    prbCid=0,
+                    refCid=ref_conf_id,
+                )
                 o3a.Align()
-            dist = rdShapeHelpers.ShapeTanimotoDist(query, ref_mol)
-            sim = max(0.0, 1.0 - dist)
-            best = max(best, sim)
-        except Exception:
-            continue
+
+                dist = AllChem.ShapeTanimotoDist(
+                    query, ref_mol,
+                    confId1=0,
+                    confId2=ref_conf_id,
+                )
+                sim = max(0.0, 1.0 - dist)
+                best = max(best, sim)
+            except Exception:
+                continue
 
     return best
 
