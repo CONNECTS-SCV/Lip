@@ -402,6 +402,11 @@ class ReinventWrapper(BaseGenerator):
                 lines.append(f'chkpt_file = "{_toml_path(stage.chkpt_file)}"')
             lines.append("")
 
+            # Scoring type (required by REINVENT4 ScorerConfig)
+            lines.append("[stage.scoring]")
+            lines.append('type = "geometric_mean"')
+            lines.append("")
+
             # Scoring components for this stage
             for comp in stage.scoring_components:
                 lines.append(f"[[stage.scoring.component]]")
