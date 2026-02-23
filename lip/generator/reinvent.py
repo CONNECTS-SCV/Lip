@@ -345,6 +345,35 @@ class ReinventWrapper(BaseGenerator):
     # TOML config generation
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _emit_toml_value(lines: list[str], prefix: str, key: str, value):
+        """Emit a single TOML key-value under a dotted prefix."""
+        if isinstance(value, str):
+            lines.append(f'{prefix}.{key} = "{value}"')
+        elif isinstance(value, bool):
+            lines.append(f"{prefix}.{key} = {'true' if value else 'false'}")
+        elif isinstance(value, list):
+            items = ", ".join(
+                f'"{x}"' if isinstance(x, str) else str(x) for x in value
+            )
+            lines.append(f"{prefix}.{key} = [{items}]")
+        else:
+            lines.append(f"{prefix}.{key} = {value}")
+
+    @staticmethod
+    def _emit_endpoint(lines: list[str], comp, comp_type: str):
+        """Emit a single endpoint block for a scoring component."""
+        lines.append(f"[[stage.scoring.component.{comp_type}.endpoint]]")
+        name = comp.name or comp_type
+        lines.append(f'name = "{name}"')
+        lines.append(f"weight = {comp.weight}")
+        if comp.transform:
+            for k, v in comp.transform.items():
+                ReinventGenerator._emit_toml_value(lines, "transform", k, v)
+        if comp.params:
+            for k, v in comp.params.items():
+                ReinventGenerator._emit_toml_value(lines, "params", k, v)
+
     def _build_toml_config(
         self,
         stages: list[StageConfig],
@@ -407,36 +436,30 @@ class ReinventWrapper(BaseGenerator):
             lines.append('type = "geometric_mean"')
             lines.append("")
 
-            # Scoring components for this stage
+            # Group ExternalProcess components by (executable, args) for multi-endpoint
+            ext_groups: dict[tuple, list] = {}
+            other_components = []
+
             for comp in stage.scoring_components:
-                lines.append(f"[[stage.scoring.component]]")
-                lines.append(f'[stage.scoring.component.{comp.type}]')
-                if comp.name:
-                    lines.append(f'name = "{comp.name}"')
+                if comp.type == "ExternalProcess":
+                    key = (comp.params.get("executable", ""), comp.params.get("args", ""))
+                    ext_groups.setdefault(key, []).append(comp)
+                else:
+                    other_components.append(comp)
 
-                # Transform
-                if comp.transform:
-                    lines.append(f"[stage.scoring.component.{comp.type}.transform]")
-                    for k, v in comp.transform.items():
-                        if isinstance(v, str):
-                            lines.append(f'{k} = "{v}"')
-                        else:
-                            lines.append(f"{k} = {v}")
+            # Emit non-ExternalProcess components (one block each)
+            for comp in other_components:
+                lines.append("[[stage.scoring.component]]")
+                lines.append(f"[stage.scoring.component.{comp.type}]")
+                self._emit_endpoint(lines, comp, comp.type)
+                lines.append("")
 
-                # Params
-                for k, v in comp.params.items():
-                    if isinstance(v, list):
-                        items = ", ".join(
-                            f'"{x}"' if isinstance(x, str) else str(x) for x in v
-                        )
-                        lines.append(f"{k} = [{items}]")
-                    elif isinstance(v, str):
-                        lines.append(f'{k} = "{v}"')
-                    elif isinstance(v, bool):
-                        lines.append(f"{k} = {'true' if v else 'false'}")
-                    else:
-                        lines.append(f"{k} = {v}")
-
+            # Emit ExternalProcess groups (one block per unique executable+args)
+            for (exe, args_str), comps in ext_groups.items():
+                lines.append("[[stage.scoring.component]]")
+                lines.append("[stage.scoring.component.ExternalProcess]")
+                for comp in comps:
+                    self._emit_endpoint(lines, comp, "ExternalProcess")
                 lines.append("")
 
         toml_path.write_text("\n".join(lines))
