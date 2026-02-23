@@ -369,10 +369,10 @@ class ReinventWrapper(BaseGenerator):
         lines.append(f"weight = {comp.weight}")
         if comp.transform:
             for k, v in comp.transform.items():
-                ReinventGenerator._emit_toml_value(lines, "transform", k, v)
+                ReinventWrapper._emit_toml_value(lines, "transform", k, v)
         if comp.params:
             for k, v in comp.params.items():
-                ReinventGenerator._emit_toml_value(lines, "params", k, v)
+                ReinventWrapper._emit_toml_value(lines, "params", k, v)
 
     def _build_toml_config(
         self,
