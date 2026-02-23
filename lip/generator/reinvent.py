@@ -86,10 +86,10 @@ def similarity_component(
     ref_smiles: str, weight: float = 1.0
 ) -> ScoringComponent:
     return ScoringComponent(
-        type="TanimotoSimilarity",
-        name="similarity",
+        type="TanimotoDistance",
+        name="Similarity",
         weight=weight,
-        params={"smiles": [ref_smiles], "radius": 3, "use_counts": True},
+        params={"smiles": [ref_smiles], "radius": 3, "use_counts": True, "use_features": True},
     )
 
 
@@ -142,7 +142,7 @@ def external_process_component(
         name=property_name,
         weight=weight,
         transform=transform or {},
-        params={"executable": executable, "args": args},
+        params={"executable": executable, "args": args, "property": property_name},
     )
 
 
@@ -389,10 +389,14 @@ class ReinventWrapper(BaseGenerator):
             f'tb_logdir = "{_toml_path(output_dir)}/tb_logs"',
             "",
             "[parameters]",
+            f"summary_csv_prefix = \"{_toml_path(output_dir)}/staged_learning\"",
+            "use_checkpoint = false",
+            "purge_memories = false",
             f'prior_file = "{_toml_path(self.prior_model)}"',
             f'agent_file = "{_toml_path(self.agent_model)}"',
             f"batch_size = {self.batch_size}",
-            f"summary_csv_prefix = \"{_toml_path(output_dir)}/staged_learning\"",
+            "unique_sequences = true",
+            "randomize_smiles = true",
             "",
             "[learning_strategy]",
             'type = "dap"',
@@ -406,6 +410,8 @@ class ReinventWrapper(BaseGenerator):
             lines.extend([
                 "[diversity_filter]",
                 f'type = "{self.diversity_filter}"',
+                "bucket_size = 25",
+                "minscore = 0.4",
                 "",
             ])
 
@@ -421,14 +427,15 @@ class ReinventWrapper(BaseGenerator):
 
         # Stages
         for i, stage in enumerate(stages):
+            chkpt = stage.chkpt_file or f"{_toml_path(output_dir)}/agent_stage{i+1}.chkpt"
             lines.extend([
                 f"[[stage]]",
-                f"max_steps = {stage.max_steps}",
-                f"min_steps = {stage.min_steps}",
+                f'chkpt_file = "{_toml_path(chkpt)}"',
+                'termination = "simple"',
                 f"max_score = {stage.max_score}",
+                f"min_steps = {stage.min_steps}",
+                f"max_steps = {stage.max_steps}",
             ])
-            if stage.chkpt_file:
-                lines.append(f'chkpt_file = "{_toml_path(stage.chkpt_file)}"')
             lines.append("")
 
             # Scoring type (required by REINVENT4 ScorerConfig)
