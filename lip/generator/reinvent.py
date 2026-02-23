@@ -366,7 +366,7 @@ class ReinventWrapper(BaseGenerator):
             f"summary_csv_prefix = \"{_toml_path(output_dir)}/staged_learning\"",
             "",
             "[learning_strategy]",
-            'type = "DAP"',
+            'type = "dap"',
             f"sigma = {self.sigma}",
             f"rate = {self.learning_rate}",
             "",
