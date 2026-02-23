@@ -350,7 +350,7 @@ def vina_external_process_main():
                         smiles=smi,
                         protein_mol=protein_mol,
                     )
-                    interaction_counts.append(float(analysis.get("n_interactions", 0)))
+                    interaction_counts.append(float(analysis.total_count))
                 except Exception:
                     interaction_counts.append(0.0)
             else:

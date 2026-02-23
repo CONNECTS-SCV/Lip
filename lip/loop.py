@@ -298,8 +298,8 @@ class OptimizationLoop:
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        n_rounds = self.config.optimization.n_rounds
-        n_mols = self.config.optimization.n_molecules_per_round
+        n_rounds = self.config.optimization.n_steps
+        n_mols = self.config.optimization.batch_size
 
         all_results = []
 
@@ -400,7 +400,7 @@ class OptimizationLoop:
                     passed_list.append(False)
                 else:
                     norm_scores.append(
-                        max(0.0, min(1.0, normalize_score(r.score, high=t_high, low=t_low)))
+                        max(0.0, min(1.0, normalize_score(r.score, low=t_high, high=t_low)))
                     )
                     passed_list.append(r.score <= t_high)
 
