@@ -62,10 +62,16 @@ REINVENT4 기반 분자 생성 → 도킹/스코어링 → 최적화 파이프�
 
 ## 🚨 서버 배포 시 필수 조치
 
-### gemmi 패키지 설치
+### 1. gemmi 패키지 설치
 - **문제**: 서버 테스트 결과 ALL docking이 `No module named 'gemmi'`로 실패
 - **원인**: `meeko` (SMILES→PDBQT 변환) 내부에서 `gemmi`를 import하는데 서버에 미설치
 - **해결**: `pip install gemmi` (requirements.txt에 추가 완료)
+
+### 2. Pocket2Mol 확률 정규화 패치 (외부 모델 버그)
+- **문제**: `sample_for_pdb.py` line 209에서 `ValueError: probabilities do not sum to 1` 크래시
+- **원인**: Pocket2Mol 원본 코드의 numpy 부동소수점 누적 오차 (우리 코드 아님)
+- **해결**: 서버에서 `/home/connects/SCV_Models/Models/Pocket2Mol/sample_for_pdb.py` line 209 앞에 `prob = prob / prob.sum()` 추가
+- **방어**: `generate.py`에서 exit code ≠ 0이어도 SDF 파일 존재 시 계속 진행하도록 수정 완료
 
 ---
 
