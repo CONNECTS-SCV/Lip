@@ -249,6 +249,10 @@ class OptimizationLoop:
                         except (ValueError, KeyError):
                             continue
 
+            # Save per-round CSV (same format as manual mode)
+            if chunk_molecules:
+                save_round_results(chunk_idx, chunk_molecules, str(output_dir))
+
             # Create RoundResult for this step
             if step_scores:
                 rr = RoundResult(

@@ -39,7 +39,7 @@ class InceptionConfig:
 
 @dataclass
 class OptimizationConfig:
-    mode: str = "manual"  # "managed" | "manual"
+    mode: str = "managed"  # "managed" | "manual"
     n_steps: int = 10
     batch_size: int = 100
     max_score: float = 0.85
