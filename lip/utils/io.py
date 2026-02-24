@@ -175,3 +175,36 @@ def save_progress_plot(
     fig.savefig(str(filepath), dpi=150, bbox_inches="tight")
     plt.close(fig)
     log.info(f"Progress plot saved: {filepath}")
+
+
+def save_top_molecules(
+    results: list[Any],
+    output_dir: str | Path,
+    top_n: int = 20,
+) -> None:
+    """Save top N molecules across all rounds to top_molecules.csv.
+
+    Args:
+        results: List of RoundResult (must have .molecules list of dicts with "score").
+        output_dir: Directory to save top_molecules.csv.
+        top_n: Number of top molecules to save.
+    """
+    if not results:
+        return
+
+    all_mols = []
+    for r in results:
+        for m in r.molecules:
+            mol = dict(m)
+            mol.setdefault("round", r.round_num)
+            all_mols.append(mol)
+
+    if not all_mols:
+        return
+
+    all_mols.sort(key=lambda m: m.get("score", 0.0), reverse=True)
+    top = all_mols[:top_n]
+
+    filepath = Path(output_dir) / "top_molecules.csv"
+    save_results_csv(top, filepath)
+    log.info(f"Top {len(top)} molecules saved: {filepath}")

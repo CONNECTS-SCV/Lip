@@ -20,7 +20,7 @@ from lip.scoring.docking import BaseDockingScorer, VinaDockingScorer
 from lip.utils.chem import (
     is_valid, canonicalize, check_lipinski, check_pains, is_reinvent_compatible,
 )
-from lip.utils.io import save_round_results, save_json, load_json, save_progress_plot
+from lip.utils.io import save_round_results, save_json, load_json, save_progress_plot, save_top_molecules
 from lip.utils.math import normalize_score
 
 log = logging.getLogger(__name__)
@@ -289,6 +289,7 @@ class OptimizationLoop:
         self.state.completed = True
         self.state.save(output_dir / "run_state.json")
         save_progress_plot(all_results, output_dir)
+        save_top_molecules(all_results, output_dir)
         return all_results
 
     # -----------------------------------------------------------------------
@@ -369,6 +370,7 @@ class OptimizationLoop:
         self.state.completed = True
         self.state.save(output_dir / "run_state.json")
         save_progress_plot(all_results, output_dir)
+        save_top_molecules(all_results, output_dir)
 
         return all_results
 
