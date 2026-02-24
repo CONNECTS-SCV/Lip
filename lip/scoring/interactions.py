@@ -289,6 +289,7 @@ def _detect_interactions(
     # --- PiStacking: aromatic ring centroid distance < 5.5A ---
     pi_dist = type_map.get("PiStacking")
     if pi_dist:
+        seen = set()
         lig_rings = _get_aromatic_rings(ligand)
         prot_rings = _get_aromatic_rings(protein)
         for lr in lig_rings:
@@ -298,7 +299,9 @@ def _detect_interactions(
                 d = _centroid_dist(lc, pc)
                 if d <= pi_dist:
                     res = _get_residue_label(protein.GetAtomWithIdx(pr[0]))
-                    interactions.append(Interaction("PiStacking", res, f"Ring{lr[0]}", d, res))
+                    if res not in seen:
+                        seen.add(res)
+                        interactions.append(Interaction("PiStacking", res, f"Ring{lr[0]}", d, res))
 
     # --- CationPi: cation-aromatic < 6.0A (bidirectional) ---
     cat_dist = type_map.get("CationPi")

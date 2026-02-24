@@ -453,15 +453,21 @@ class ReinventWrapper(BaseGenerator):
     # -----------------------------------------------------------------------
 
     @staticmethod
+    def _escape_toml_string(s: str) -> str:
+        """Escape backslashes and quotes for TOML basic strings."""
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
     def _emit_toml_value(lines: list[str], prefix: str, key: str, value):
         """Emit a single TOML key-value under a dotted prefix."""
+        esc = ReinventWrapper._escape_toml_string
         if isinstance(value, str):
-            lines.append(f'{prefix}.{key} = "{value}"')
+            lines.append(f'{prefix}.{key} = "{esc(value)}"')
         elif isinstance(value, bool):
             lines.append(f"{prefix}.{key} = {'true' if value else 'false'}")
         elif isinstance(value, list):
             items = ", ".join(
-                f'"{x}"' if isinstance(x, str) else str(x) for x in value
+                f'"{esc(x)}"' if isinstance(x, str) else str(x) for x in value
             )
             lines.append(f"{prefix}.{key} = [{items}]")
         else:

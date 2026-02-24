@@ -23,6 +23,8 @@ from lip.utils.math import normalize_score
 
 log = logging.getLogger(__name__)
 
+_PROTEIN_NOT_LOADED = object()
+
 
 # ---------------------------------------------------------------------------
 # Round result
@@ -107,16 +109,17 @@ class OptimizationLoop:
             constraint = create_constraint(cc.type, cc.weight, cc.params)
             loop.constraints.append((cc.type, cc.weight, constraint))
 
-        # Docking scorer
-        if config.docking.enabled and config.receptor_pdb:
-            center = tuple(config.pocket_center)
-            box = (config.docking.box_size,) * 3
-            loop.docking_scorer = VinaDockingScorer(
-                receptor_pdb=config.receptor_pdb,
-                pocket_center=center,
-                box_size=box,
-                exhaustiveness=config.docking.exhaustiveness,
-            )
+        # Docking scorer (manual mode only — managed uses REINVENT4 ExternalProcess)
+        if config.optimization.mode != "managed":
+            if config.docking.enabled and config.receptor_pdb:
+                center = tuple(config.pocket_center)
+                box = (config.docking.box_size,) * 3
+                loop.docking_scorer = VinaDockingScorer(
+                    receptor_pdb=config.receptor_pdb,
+                    pocket_center=center,
+                    box_size=box,
+                    exhaustiveness=config.docking.exhaustiveness,
+                )
 
         return loop
 
@@ -374,9 +377,9 @@ class OptimizationLoop:
     def _get_protein_mol(self):
         """Load and cache protein RDKit Mol for interaction analysis."""
         if not hasattr(self, "_protein_mol_cache"):
-            self._protein_mol_cache = None
+            self._protein_mol_cache = _PROTEIN_NOT_LOADED
 
-        if self._protein_mol_cache is not None:
+        if self._protein_mol_cache is not _PROTEIN_NOT_LOADED:
             return self._protein_mol_cache
 
         try:
@@ -390,6 +393,7 @@ class OptimizationLoop:
             return mol
         except Exception as e:
             log.warning(f"Could not load protein for interaction analysis: {e}")
+            self._protein_mol_cache = None
             return None
 
     def _analyze_interactions_batch(
@@ -425,8 +429,9 @@ class OptimizationLoop:
                 count = report.total_count
                 r.interaction_count = count
 
-                # Sigmoid normalization (CHEM-identical: high=8, low=0, k=0.5)
-                midpoint = 4.0  # (8.0 + 0.0) / 2
+                # Sigmoid normalization
+                norm_max = self.config.docking.interaction_norm_max
+                midpoint = norm_max / 2.0
                 norm = 1.0 / (1.0 + math.exp(-0.5 * (count - midpoint)))
                 scores.append(norm)
                 passed.append(count > 0)

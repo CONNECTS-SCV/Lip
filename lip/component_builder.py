@@ -197,7 +197,7 @@ class ComponentBuilder:
             weight=cfg.docking.interaction_weight,
             transform=reinvent_sigmoid(
                 low=0.0,
-                high=8.0,
+                high=cfg.docking.interaction_norm_max,
                 k=0.5,
             ),
         )

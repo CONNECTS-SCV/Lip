@@ -62,7 +62,8 @@ def prepare_ligand_pdbqt(smiles: str) -> tuple[str, bool]:
 
     mol = Chem.AddHs(mol)
     if AllChem.EmbedMolecule(mol, AllChem.ETKDGv3()) == -1:
-        AllChem.EmbedMolecule(mol, AllChem.EmbedParameters())  # fallback
+        if AllChem.EmbedMolecule(mol, AllChem.EmbedParameters()) == -1:
+            return "", False
     AllChem.MMFFOptimizeMolecule(mol, maxIters=200)
 
     preparator = MoleculePreparation()
@@ -199,7 +200,8 @@ def _init_worker(rec_pdbqt: str, center: list, box_size: list, exhaustiveness: i
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
-    sys.stdout = open(os.devnull, "w")
+    _devnull = open(os.devnull, "w")
+    sys.stdout = _devnull
     from vina import Vina
     _worker_vina = Vina(sf_name="vina", verbosity=0)
     _worker_vina.set_receptor(rigid_pdbqt_filename=rec_pdbqt)
@@ -256,114 +258,128 @@ def vina_external_process_main():
         format="[LIP-DOCK] %(levelname)s %(message)s",
     )
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--receptor", required=True)
-    parser.add_argument("--center", required=True, help="x,y,z")
-    parser.add_argument("--box-size", default="25,25,25", help="sx,sy,sz")
-    parser.add_argument("--exhaustiveness", type=int, default=8)
-    parser.add_argument("--analyze-interactions", action="store_true")
-    parser.add_argument("--n-workers", type=int, default=0)
-    args = parser.parse_args()
-
-    center = tuple(float(x) for x in args.center.split(","))
-    box_size = tuple(float(x) for x in args.box_size.split(","))
-
-    log.info(f"Receptor: {args.receptor}")
-    log.info(f"Center: {center}, Box: {box_size}, Exhaustiveness: {args.exhaustiveness}")
-
-    # Read SMILES from stdin (plain text, one per line)
-    smiles_list = [line.strip() for line in sys.stdin if line.strip()]
-
-    if not smiles_list:
-        sys.stdout = _real_stdout
-        print(json.dumps({"version": 1, "payload": {"docking_score": []}}))
-        return
-
-    log.info(f"Received {len(smiles_list)} SMILES for docking")
-
-    # Determine worker count
-    n_workers = args.n_workers
-    if n_workers <= 0:
-        n_workers = min(max(os.cpu_count() // 4, 1), 4)
-    n_workers = max(1, min(n_workers, len(smiles_list)))
-
-    # Ensure cached receptor PDBQT exists
     try:
-        rec_pdbqt = get_cached_receptor_pdbqt(args.receptor)
-        log.info(f"Receptor PDBQT ready: {rec_pdbqt}")
-    except Exception as e:
-        log.error(f"Receptor PDBQT preparation failed: {e}")
-        sys.stdout = _real_stdout
-        scores = [0.0] * len(smiles_list)
-        print(json.dumps({"version": 1, "payload": {"docking_score": scores}}))
-        return
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--receptor", required=True)
+        parser.add_argument("--center", required=True, help="x,y,z")
+        parser.add_argument("--box-size", default="25,25,25", help="sx,sy,sz")
+        parser.add_argument("--exhaustiveness", type=int, default=8)
+        parser.add_argument("--analyze-interactions", action="store_true")
+        parser.add_argument("--n-workers", type=int, default=0)
+        args = parser.parse_args()
 
-    # Dock molecules
-    if n_workers > 1:
-        log.info(f"Parallel docking with {n_workers} workers")
-        with ProcessPoolExecutor(
-            max_workers=n_workers,
-            initializer=_init_worker,
-            initargs=(rec_pdbqt, list(center), list(box_size), args.exhaustiveness),
-        ) as pool:
-            results = list(pool.map(_dock_one, smiles_list))
-    else:
-        log.info("Sequential docking (single worker)")
-        scorer = VinaDockingScorer(
-            receptor_pdb=args.receptor,
-            pocket_center=center,
-            box_size=box_size,
-            exhaustiveness=args.exhaustiveness,
-        )
-        results = []
-        for smi in smiles_list:
-            r = scorer.dock_smiles(smi)
-            results.append((smi, r.score if r.success else 0.0, r.success, r.pose_pdbqt))
+        center = tuple(float(x) for x in args.center.split(","))
+        box_size = tuple(float(x) for x in args.box_size.split(","))
 
-    # Collect docking scores
-    docking_scores = [r[1] for r in results]
-    n_success = sum(1 for r in results if r[2])
-    log.info(f"Docking done: {n_success}/{len(results)} succeeded")
-    if n_success > 0:
-        valid_scores = [r[1] for r in results if r[2]]
-        log.info(f"Score range: [{min(valid_scores):.2f}, {max(valid_scores):.2f}]")
+        log.info(f"Receptor: {args.receptor}")
+        log.info(f"Center: {center}, Box: {box_size}, Exhaustiveness: {args.exhaustiveness}")
 
-    # Interaction analysis (sequential, uses docked poses)
-    interaction_counts = []
-    if args.analyze_interactions:
-        protein_mol = None
+        # Read SMILES from stdin (plain text, one per line)
+        smiles_list = [line.strip() for line in sys.stdin if line.strip()]
+
+        if not smiles_list:
+            sys.stdout = _real_stdout
+            payload = {"docking_score": []}
+            if args.analyze_interactions:
+                payload["interaction_count"] = []
+            print(json.dumps({"version": 1, "payload": payload}))
+            return
+
+        log.info(f"Received {len(smiles_list)} SMILES for docking")
+
+        # Determine worker count
+        n_workers = args.n_workers
+        if n_workers <= 0:
+            n_workers = min(max(os.cpu_count() // 4, 1), 4)
+        n_workers = max(1, min(n_workers, len(smiles_list)))
+
+        # Ensure cached receptor PDBQT exists
         try:
-            from rdkit import Chem
-            protein_mol = Chem.MolFromPDBFile(
-                args.receptor, removeHs=False, sanitize=False,
-            )
+            rec_pdbqt = get_cached_receptor_pdbqt(args.receptor)
+            log.info(f"Receptor PDBQT ready: {rec_pdbqt}")
         except Exception as e:
-            log.warning(f"Failed to load protein for interaction analysis: {e}")
+            log.error(f"Receptor PDBQT preparation failed: {e}")
+            sys.stdout = _real_stdout
+            payload = {"docking_score": [0.0] * len(smiles_list)}
+            if args.analyze_interactions:
+                payload["interaction_count"] = [0.0] * len(smiles_list)
+            print(json.dumps({"version": 1, "payload": payload}))
+            return
 
-        for smi, energy, success, pose in results:
-            if success and pose and protein_mol is not None:
-                try:
-                    from lip.scoring.interactions import analyze_pose
-                    analysis = analyze_pose(
-                        protein_pdb=args.receptor,
-                        pose_pdbqt=pose,
-                        smiles=smi,
-                        protein_mol=protein_mol,
-                    )
-                    interaction_counts.append(float(analysis.total_count))
-                except Exception:
+        # Dock molecules
+        results = None
+        if n_workers > 1:
+            log.info(f"Parallel docking with {n_workers} workers")
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=n_workers,
+                    initializer=_init_worker,
+                    initargs=(rec_pdbqt, list(center), list(box_size), args.exhaustiveness),
+                ) as pool:
+                    results = list(pool.map(_dock_one, smiles_list))
+            except Exception as e:
+                log.error(f"Parallel docking failed: {e}, falling back to sequential")
+                results = None
+
+        if results is None:
+            log.info("Sequential docking (single worker)")
+            scorer = VinaDockingScorer(
+                receptor_pdb=args.receptor,
+                pocket_center=center,
+                box_size=box_size,
+                exhaustiveness=args.exhaustiveness,
+            )
+            results = []
+            for smi in smiles_list:
+                r = scorer.dock_smiles(smi)
+                results.append((smi, r.score if r.success else 0.0, r.success, r.pose_pdbqt))
+
+        # Collect docking scores
+        docking_scores = [r[1] for r in results]
+        n_success = sum(1 for r in results if r[2])
+        log.info(f"Docking done: {n_success}/{len(results)} succeeded")
+        if n_success > 0:
+            valid_scores = [r[1] for r in results if r[2]]
+            log.info(f"Score range: [{min(valid_scores):.2f}, {max(valid_scores):.2f}]")
+
+        # Interaction analysis (sequential, uses docked poses)
+        interaction_counts = []
+        if args.analyze_interactions:
+            protein_mol = None
+            try:
+                from rdkit import Chem
+                protein_mol = Chem.MolFromPDBFile(
+                    args.receptor, removeHs=False, sanitize=False,
+                )
+            except Exception as e:
+                log.warning(f"Failed to load protein for interaction analysis: {e}")
+
+            for smi, energy, success, pose in results:
+                if success and pose and protein_mol is not None:
+                    try:
+                        from lip.scoring.interactions import analyze_pose
+                        analysis = analyze_pose(
+                            protein_pdb=args.receptor,
+                            pose_pdbqt=pose,
+                            smiles=smi,
+                            protein_mol=protein_mol,
+                        )
+                        interaction_counts.append(float(analysis.total_count))
+                    except Exception:
+                        interaction_counts.append(0.0)
+                else:
                     interaction_counts.append(0.0)
-            else:
-                interaction_counts.append(0.0)
 
-    payload = {"docking_score": docking_scores}
-    if args.analyze_interactions:
-        payload["interaction_count"] = interaction_counts
+        payload = {"docking_score": docking_scores}
+        if args.analyze_interactions:
+            payload["interaction_count"] = interaction_counts
 
-    output = {"version": 1, "payload": payload}
+        output = {"version": 1, "payload": payload}
 
-    sys.stdout = _real_stdout
-    print(json.dumps(output))
+        sys.stdout = _real_stdout
+        print(json.dumps(output))
+    finally:
+        sys.stdout = _real_stdout
 
 
 # ---------------------------------------------------------------------------
