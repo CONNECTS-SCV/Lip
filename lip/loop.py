@@ -10,14 +10,13 @@ from typing import Any, Callable
 
 from lip.config import LipConfig
 from lip.component_builder import ComponentBuilder
-from lip.inception import InceptionBuffer
 from lip.constraints.base import ConstraintResult
 from lip.constraints.registry import create_constraint
 from lip.generator.reinvent import ReinventWrapper, StageConfig
 from lip.scoring.aggregator import ScoreAggregator
 from lip.scoring.docking import BaseDockingScorer, VinaDockingScorer
 from lip.utils.chem import (
-    is_valid, canonicalize, check_lipinski, check_pains, is_reinvent_compatible,
+    is_valid, canonicalize, check_lipinski, check_pains,
 )
 from lip.utils.io import save_round_results, save_json, load_json, save_progress_plot, save_top_molecules
 from lip.utils.math import normalize_score
@@ -141,138 +140,93 @@ class OptimizationLoop:
     # -----------------------------------------------------------------------
 
     def _run_managed_mode(self) -> list[RoundResult]:
-        """Run RL via REINVENT4 staged_learning, chunk by chunk.
+        """Run RL via REINVENT4 staged_learning in a single process.
 
-        Manages:
-        - Per-step RoundResult creation and callbacks
-        - Cross-chunk inception buffer with dedup and retention policy
-        - REINVENT4 bracket compatibility filtering for inception seeds
+        REINVENT4 internally handles all N steps:
+        - Per-step weight updates
+        - Inception / experience replay
+        - Diversity filter
+        - Early termination via max_score
+
+        After completion, parse CSV (step column) for per-step results.
         """
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         n_steps = self.config.optimization.n_steps
-        chunk_size = 1  # 1 step per chunk for per-step granularity
-        n_chunks = n_steps
 
-        all_results: list[RoundResult] = []
-        memory_size = self.config.optimization.inception.memory_size
-        inception_enabled = memory_size > 0
-        inception = InceptionBuffer(
-            memory_size=memory_size,
-            retention=self.config.optimization.inception.retention,
+        # Build scoring components
+        components = self.component_builder.build_all(self.constraints)
+        chkpt_path = str(output_dir / "checkpoints" / "agent.chkpt")
+        Path(chkpt_path).parent.mkdir(parents=True, exist_ok=True)
+
+        stage = StageConfig(
+            max_steps=n_steps,
+            min_steps=1,
+            max_score=self.config.optimization.max_score,
+            scoring_components=components,
+            chkpt_file=chkpt_path,
         )
-        steps_completed = self.state.current_chunk
 
-        for chunk_idx in range(self.state.current_chunk, n_chunks):
-            log.info(f"Step {chunk_idx + 1}/{n_steps}")
+        log.info(f"Starting REINVENT4 staged_learning ({n_steps} steps)")
 
-            chunk_output_dir = output_dir / f"chunk_{chunk_idx:03d}"
-            chunk_output_dir.mkdir(parents=True, exist_ok=True)
+        # Single REINVENT4 execution
+        result = self.generator.run_staged_learning(
+            stages=[stage],
+            output_dir=str(output_dir / "rl_output"),
+        )
 
-            # Write inception buffer as seed CSV for REINVENT4
-            inception_file = None
-            if inception_enabled and inception.size > 0:
-                entries = inception.get_entries()
-                compatible = [
-                    e for e in entries
-                    if is_reinvent_compatible(e["smiles"])
-                ]
-                n_filtered = len(entries) - len(compatible)
-                if n_filtered > 0:
-                    log.info(
-                        f"Inception filter: removed {n_filtered} "
-                        f"incompatible SMILES"
-                    )
-                if compatible:
-                    inception_csv = chunk_output_dir / "inception_seed.csv"
-                    with open(inception_csv, "w") as f:
-                        for entry in compatible:
-                            f.write(f"{entry['smiles']}\n")
-                    inception_file = str(inception_csv)
-
-            # Build components and stage config
-            components = self.component_builder.build_all(self.constraints)
-            chkpt_path = str(
-                output_dir / "checkpoints" / f"chunk_{chunk_idx:03d}.chkpt"
-            )
-            Path(chkpt_path).parent.mkdir(parents=True, exist_ok=True)
-
-            stage = StageConfig(
-                max_steps=chunk_size,
-                min_steps=1,
-                max_score=self.config.optimization.max_score,
-                scoring_components=components,
-                chkpt_file=chkpt_path,
+        if not result.get("success"):
+            raise RuntimeError(
+                f"REINVENT4 failed: {result.get('error', 'unknown')}"
             )
 
-            result = self.generator.run_staged_learning(
-                stages=[stage],
-                output_dir=str(chunk_output_dir),
-                inception_smiles_file=inception_file,
-            )
+        log.info("REINVENT4 completed, parsing results...")
 
-            if not result.get("success"):
-                log.error(
-                    f"REINVENT4 chunk {chunk_idx} failed: "
-                    f"{result.get('error', 'unknown')}"
+        # Parse per-step data from CSV
+        all_results: list[RoundResult] = []
+        scores_by_step = result.get("scores_by_step", {})
+        molecules_by_stage = result.get("molecules_by_stage", {})
+
+        # Group molecules by step
+        all_molecules: list[dict] = []
+        for stage_num, mols in molecules_by_stage.items():
+            all_molecules.extend(mols)
+
+        molecules_by_step: dict[int, list[dict[str, Any]]] = {}
+        for mol in all_molecules:
+            s = mol.get("step", 0)
+            molecules_by_step.setdefault(s, []).append({
+                "smiles": mol["smiles"],
+                "score": mol["total_score"],
+                "scores": mol.get("scores", {}),
+                "raw_values": mol.get("raw_values", {}),
+            })
+
+        # Create per-step RoundResult + per-round CSV
+        for stage_num, steps_data in scores_by_step.items():
+            for step_data in steps_data:
+                step_num = step_data["step"]
+                step_mols = molecules_by_step.get(step_num, [])
+
+                rr = RoundResult(
+                    round_num=step_num,
+                    molecules=step_mols,
+                    best_score=step_data["max_score"],
+                    avg_score=step_data["mean_score"],
+                    n_valid=len(step_mols),
+                    n_total=step_data.get("n", self.config.generator.batch_size),
                 )
-                continue
+                all_results.append(rr)
 
-            log.info(f"REINVENT4 chunk {chunk_idx} completed successfully")
+                if step_mols:
+                    save_round_results(step_num, step_mols, str(output_dir))
 
-            # Extract molecules from parsed results
-            chunk_molecules: list[dict[str, Any]] = []
-            molecules_by_stage = result.get("molecules_by_stage", {})
-            for stage_num, mols in molecules_by_stage.items():
-                for mol in mols:
-                    chunk_molecules.append({
-                        "smiles": mol["smiles"],
-                        "score": mol["total_score"],
-                        "scores": mol.get("scores", {}),
-                        "raw_values": mol.get("raw_values", {}),
-                        "step": mol.get("step", 0),
-                    })
-
-            # Save per-round CSV (same format as manual mode)
-            if chunk_molecules:
-                save_round_results(chunk_idx, chunk_molecules, str(output_dir))
-
-            # Create RoundResult from parsed step data
-            scores_by_step = result.get("scores_by_step", {})
-            for stage_num, steps_data in scores_by_step.items():
-                for step_data in steps_data:
-                    rr = RoundResult(
-                        round_num=chunk_idx,
-                        molecules=chunk_molecules,
-                        best_score=step_data["max_score"],
-                        avg_score=step_data["mean_score"],
-                        n_valid=len(chunk_molecules),
-                        n_total=step_data.get("n", self.config.generator.batch_size),
-                    )
-                    all_results.append(rr)
-                    if self._on_round_complete:
-                        self._on_round_complete(rr)
-
-            # Update inception buffer
-            if inception_enabled and chunk_molecules:
-                n_added = inception.update(chunk_molecules)
-                log.info(
-                    f"Inception buffer: {inception.size}/{memory_size} "
-                    f"(+{n_added} new, mode={inception.retention})"
-                )
-
-            self.state.current_chunk = chunk_idx + 1
-            self.state.best_score = max(
-                self.state.best_score,
-                max((r.best_score for r in all_results), default=0.0),
-            )
-            self.state.save(output_dir / "run_state.json")
-
-            if self._should_early_stop(all_results):
-                log.info("Early stopping triggered")
-                break
-
+        # Final state + outputs
+        self.state.best_score = max(
+            (r.best_score for r in all_results), default=0.0,
+        )
+        self.state.total_molecules = sum(r.n_valid for r in all_results)
         self.state.completed = True
         self.state.save(output_dir / "run_state.json")
         save_progress_plot(all_results, output_dir)
