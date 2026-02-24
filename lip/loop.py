@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -19,7 +20,7 @@ from lip.scoring.docking import BaseDockingScorer, VinaDockingScorer
 from lip.utils.chem import (
     is_valid, canonicalize, check_lipinski, check_pains, is_reinvent_compatible,
 )
-from lip.utils.io import save_round_results, save_json, load_json
+from lip.utils.io import save_round_results, save_json, load_json, save_progress_plot
 from lip.utils.math import normalize_score
 
 log = logging.getLogger(__name__)
@@ -287,6 +288,7 @@ class OptimizationLoop:
 
         self.state.completed = True
         self.state.save(output_dir / "run_state.json")
+        save_progress_plot(all_results, output_dir)
         return all_results
 
     # -----------------------------------------------------------------------
@@ -366,6 +368,7 @@ class OptimizationLoop:
 
         self.state.completed = True
         self.state.save(output_dir / "run_state.json")
+        save_progress_plot(all_results, output_dir)
 
         return all_results
 
@@ -479,7 +482,9 @@ class OptimizationLoop:
                 count = report.total_count
                 r.interaction_count = count
 
-                norm = min(1.0, count / self.config.docking.interaction_norm_max)
+                # Sigmoid normalization (CHEM-identical: high=8, low=0, k=0.5)
+                midpoint = 4.0  # (8.0 + 0.0) / 2
+                norm = 1.0 / (1.0 + math.exp(-0.5 * (count - midpoint)))
                 scores.append(norm)
                 passed.append(count > 0)
                 raw_counts.append(count)

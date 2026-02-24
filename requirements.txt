@@ -8,6 +8,7 @@ meeko
 gemmi
 vina
 pyyaml
+matplotlib
 
 # Molecular Generator (RL engine)
 reinvent

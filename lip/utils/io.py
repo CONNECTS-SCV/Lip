@@ -127,3 +127,51 @@ def save_round_results(
     filepath = output_dir / f"round_{round_num:03d}.csv"
     save_results_csv(molecules, filepath)
     return str(filepath)
+
+
+# ---------------------------------------------------------------------------
+# Progress plot
+# ---------------------------------------------------------------------------
+
+def save_progress_plot(
+    results: list[Any],
+    output_dir: str | Path,
+) -> None:
+    """Save a best/mean score line chart per step as progress.png.
+
+    Args:
+        results: List of RoundResult (must have .best_score, .avg_score, .round_num).
+        output_dir: Directory to save progress.png.
+    """
+    if not results:
+        return
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        log.warning("matplotlib not installed — skipping progress plot")
+        return
+
+    steps = [r.round_num + 1 for r in results]
+    bests = [r.best_score for r in results]
+    means = [r.avg_score for r in results]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(steps, bests, "o-", color="#2563eb", label="Best", linewidth=2, markersize=5)
+    ax.plot(steps, means, "s-", color="#f97316", label="Mean", linewidth=2, markersize=5)
+
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Score")
+    ax.set_title("Optimization Progress")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(left=0.5)
+    ax.set_ylim(bottom=0.0, top=1.0)
+
+    filepath = Path(output_dir) / "progress.png"
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(filepath), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    log.info(f"Progress plot saved: {filepath}")
