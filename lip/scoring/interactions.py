@@ -133,12 +133,26 @@ def _pdbqt_to_mol(pdbqt_string: str) -> Chem.Mol | None:
 # Ring-based interaction helpers
 # ---------------------------------------------------------------------------
 
-# Protein cation residues for CationPi detection
+# Protein charged residue atoms (CHEM-identical)
 _POS_RESIDUES: dict[str, set[str]] = {
     "ARG": {"NH1", "NH2", "NE"},
     "LYS": {"NZ"},
     "HIS": {"ND1", "NE2"},
 }
+_NEG_RESIDUES: dict[str, set[str]] = {
+    "ASP": {"OD1", "OD2"},
+    "GLU": {"OE1", "OE2"},
+}
+
+
+def _get_residue_label(atom) -> str:
+    """Get residue label like 'MET793' from a protein atom."""
+    info = atom.GetPDBResidueInfo()
+    if info:
+        name = info.GetResidueName().strip()
+        num = info.GetResidueNumber()
+        return f"{name}{num}"
+    return "UNK"
 
 
 def _get_ring_centroid(
@@ -176,133 +190,159 @@ def _get_aromatic_rings(mol: Chem.Mol) -> list[list[int]]:
 # Interaction detection
 # ---------------------------------------------------------------------------
 
+def _dist(conf1, idx1, conf2, idx2) -> float:
+    """Euclidean distance between two atoms."""
+    p1 = conf1.GetAtomPosition(idx1)
+    p2 = conf2.GetAtomPosition(idx2)
+    return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)
+
+
 def _detect_interactions(
     protein: Chem.Mol,
     ligand: Chem.Mol,
     types: list[InteractionType] | None = None,
 ) -> list[Interaction]:
-    """Detect all interactions based on atom distances and types.
+    """Detect interactions with CHEM-identical residue-level deduplication.
 
-    Args:
-        types: Interaction types to detect (default: INTERACTION_TYPES).
+    Same residue is counted only once per interaction type.
     """
     if types is None:
         types = INTERACTION_TYPES
 
-    # Pre-build lookup: name -> (distance, detector_func)
-    max_dist = max(t.distance for t in types)
     type_map = {t.name: t.distance for t in types}
-
-    interactions = []
+    interactions: list[Interaction] = []
     prot_conf = protein.GetConformer()
     lig_conf = ligand.GetConformer()
 
-    for lig_idx in range(ligand.GetNumAtoms()):
-        lig_atom = ligand.GetAtomWithIdx(lig_idx)
-        lig_pos = lig_conf.GetAtomPosition(lig_idx)
-        lig_symbol = lig_atom.GetSymbol()
+    # --- H-bonds: N/O ... N/O < 3.5A ---
+    hbond_d = type_map.get("HBond")
+    if hbond_d:
+        seen: set[str] = set()
+        lig_polar = [(a, a.GetIdx()) for a in ligand.GetAtoms() if a.GetAtomicNum() in (7, 8)]
+        prot_polar = [(a, a.GetIdx()) for a in protein.GetAtoms() if a.GetAtomicNum() in (7, 8)]
+        for la, li in lig_polar:
+            for pa, pi in prot_polar:
+                d = _dist(lig_conf, li, prot_conf, pi)
+                if d < hbond_d:
+                    res = _get_residue_label(pa)
+                    if res not in seen:
+                        seen.add(res)
+                        interactions.append(Interaction("HBond", res, f"{la.GetSymbol()}{li}", d, res))
 
-        for prot_idx in range(protein.GetNumAtoms()):
-            prot_atom = protein.GetAtomWithIdx(prot_idx)
-            prot_pos = prot_conf.GetAtomPosition(prot_idx)
-            prot_symbol = prot_atom.GetSymbol()
+    # --- Hydrophobic: C ... C < 4.5A ---
+    hydro_d = type_map.get("Hydrophobic")
+    if hydro_d:
+        seen = set()
+        lig_carbons = [a for a in ligand.GetAtoms() if a.GetAtomicNum() == 6]
+        prot_carbons = [a for a in protein.GetAtoms() if a.GetAtomicNum() == 6]
+        for la in lig_carbons:
+            for pa in prot_carbons:
+                d = _dist(lig_conf, la.GetIdx(), prot_conf, pa.GetIdx())
+                if d < hydro_d:
+                    res = _get_residue_label(pa)
+                    if res not in seen:
+                        seen.add(res)
+                        interactions.append(Interaction("Hydrophobic", res, f"C{la.GetIdx()}", d, res))
 
-            dist = lig_pos.Distance(prot_pos)
-            if dist > max_dist:
+    # --- Salt bridges: opposite charges < 4.0A ---
+    salt_d = type_map.get("SaltBridge")
+    if salt_d:
+        seen = set()
+        lig_pos = [a for a in ligand.GetAtoms() if a.GetFormalCharge() > 0]
+        lig_neg = [a for a in ligand.GetAtoms() if a.GetFormalCharge() < 0]
+        prot_pos_atoms, prot_neg_atoms = [], []
+        for a in protein.GetAtoms():
+            info = a.GetPDBResidueInfo()
+            if not info:
                 continue
+            resname = info.GetResidueName().strip()
+            atomname = info.GetName().strip()
+            if resname in _POS_RESIDUES and atomname in _POS_RESIDUES[resname]:
+                prot_pos_atoms.append(a)
+            elif resname in _NEG_RESIDUES and atomname in _NEG_RESIDUES[resname]:
+                prot_neg_atoms.append(a)
+        for lig_atoms, prot_atoms in [(lig_pos, prot_neg_atoms), (lig_neg, prot_pos_atoms)]:
+            for la in lig_atoms:
+                for pa in prot_atoms:
+                    d = _dist(lig_conf, la.GetIdx(), prot_conf, pa.GetIdx())
+                    if d < salt_d:
+                        res = _get_residue_label(pa)
+                        if res not in seen:
+                            seen.add(res)
+                            interactions.append(Interaction("SaltBridge", res, f"{la.GetSymbol()}{la.GetIdx()}", d, res))
 
-            prot_label = f"{prot_symbol}{prot_idx}"
-            lig_label = f"{lig_symbol}{lig_idx}"
+    # --- Halogen bonds: X ... N/O/S < 3.5A ---
+    hal_d = type_map.get("HalogenBond")
+    if hal_d:
+        seen = set()
+        lig_halogens = [a for a in ligand.GetAtoms() if a.GetAtomicNum() in (17, 35, 53)]
+        prot_acceptors = [a for a in protein.GetAtoms() if a.GetAtomicNum() in (7, 8, 16)]
+        for lx in lig_halogens:
+            for pa in prot_acceptors:
+                d = _dist(lig_conf, lx.GetIdx(), prot_conf, pa.GetIdx())
+                if d < hal_d:
+                    res = _get_residue_label(pa)
+                    if res not in seen:
+                        seen.add(res)
+                        interactions.append(Interaction("HalogenBond", res, f"{lx.GetSymbol()}{lx.GetIdx()}", d, res))
 
-            # H-bond
-            hbond_d = type_map.get("HBond")
-            if hbond_d and dist <= hbond_d and lig_symbol in ("N", "O") and prot_symbol in ("N", "O"):
-                interactions.append(Interaction("HBond", prot_label, lig_label, dist))
-
-            # Hydrophobic
-            hydro_d = type_map.get("Hydrophobic")
-            if hydro_d and dist <= hydro_d and lig_symbol == "C" and prot_symbol == "C":
-                if lig_atom.GetDegree() > 1 and prot_atom.GetDegree() > 1:
-                    interactions.append(Interaction("Hydrophobic", prot_label, lig_label, dist))
-
-            # Salt bridge
-            salt_d = type_map.get("SaltBridge")
-            if salt_d and dist <= salt_d:
-                lig_charge = lig_atom.GetFormalCharge()
-                prot_charge = prot_atom.GetFormalCharge()
-                if lig_charge != 0 and prot_charge != 0 and lig_charge * prot_charge < 0:
-                    interactions.append(Interaction("SaltBridge", prot_label, lig_label, dist))
-
-            # Halogen bond
-            hal_d = type_map.get("HalogenBond")
-            if hal_d and dist <= hal_d and lig_symbol in ("F", "Cl", "Br", "I") and prot_symbol in ("N", "O"):
-                interactions.append(Interaction("HalogenBond", prot_label, lig_label, dist))
-
-    # -------------------------------------------------------------------
-    # Ring-based interactions (PiStacking, CationPi)
-    # -------------------------------------------------------------------
-
-    # PiStacking: aromatic ring centroid distance
+    # --- PiStacking: aromatic ring centroid distance < 5.5A ---
     pi_dist = type_map.get("PiStacking")
     if pi_dist:
         lig_rings = _get_aromatic_rings(ligand)
         prot_rings = _get_aromatic_rings(protein)
-
         for lr in lig_rings:
             lc = _get_ring_centroid(lig_conf, lr)
             for pr in prot_rings:
                 pc = _get_ring_centroid(prot_conf, pr)
                 d = _centroid_dist(lc, pc)
                 if d <= pi_dist:
-                    interactions.append(
-                        Interaction("PiStacking", f"Ring{pr[0]}", f"Ring{lr[0]}", d)
-                    )
+                    res = _get_residue_label(protein.GetAtomWithIdx(pr[0]))
+                    interactions.append(Interaction("PiStacking", res, f"Ring{lr[0]}", d, res))
 
-    # CationPi: cation-aromatic ring centroid distance (bidirectional)
+    # --- CationPi: cation-aromatic < 6.0A (bidirectional) ---
     cat_dist = type_map.get("CationPi")
     if cat_dist:
+        seen = set()
         lig_rings = _get_aromatic_rings(ligand)
         prot_rings = _get_aromatic_rings(protein)
 
-        # Direction 1: Ligand cation -> Protein aromatic ring
-        for lig_idx in range(ligand.GetNumAtoms()):
-            lig_atom = ligand.GetAtomWithIdx(lig_idx)
-            if lig_atom.GetFormalCharge() <= 0:
-                continue
-            lp = lig_conf.GetAtomPosition(lig_idx)
-            lp_tuple = (lp.x, lp.y, lp.z)
+        # Ligand cation -> Protein aromatic ring
+        lig_cations = [a for a in ligand.GetAtoms() if a.GetFormalCharge() > 0]
+        for lc_atom in lig_cations:
+            lp = lig_conf.GetAtomPosition(lc_atom.GetIdx())
+            lp_t = (lp.x, lp.y, lp.z)
             for pr in prot_rings:
                 pc = _get_ring_centroid(prot_conf, pr)
-                d = _centroid_dist(lp_tuple, pc)
-                if d <= cat_dist:
-                    interactions.append(Interaction(
-                        "CationPi", f"Ring{pr[0]}",
-                        f"{lig_atom.GetSymbol()}{lig_idx}", d,
-                    ))
+                d = _centroid_dist(lp_t, pc)
+                if d < cat_dist:
+                    res = _get_residue_label(protein.GetAtomWithIdx(pr[0]))
+                    key = f"CatPi_{res}"
+                    if key not in seen:
+                        seen.add(key)
+                        interactions.append(Interaction("CationPi", res, f"{lc_atom.GetSymbol()}{lc_atom.GetIdx()}", d, res))
 
-        # Direction 2: Protein cation (ARG/LYS/HIS) -> Ligand aromatic ring
+        # Protein cation (ARG/LYS/HIS) -> Ligand aromatic ring
         for prot_idx in range(protein.GetNumAtoms()):
-            prot_atom = protein.GetAtomWithIdx(prot_idx)
-            info = prot_atom.GetPDBResidueInfo()
-            if info is None:
+            pa = protein.GetAtomWithIdx(prot_idx)
+            info = pa.GetPDBResidueInfo()
+            if not info:
                 continue
             resname = info.GetResidueName().strip()
             atomname = info.GetName().strip()
-            if resname not in _POS_RESIDUES:
+            if resname not in _POS_RESIDUES or atomname not in _POS_RESIDUES[resname]:
                 continue
-            if atomname not in _POS_RESIDUES[resname]:
-                continue
-
             pp = prot_conf.GetAtomPosition(prot_idx)
-            pp_tuple = (pp.x, pp.y, pp.z)
+            pp_t = (pp.x, pp.y, pp.z)
             for lr in lig_rings:
                 lc = _get_ring_centroid(lig_conf, lr)
-                d = _centroid_dist(pp_tuple, lc)
-                if d <= cat_dist:
-                    interactions.append(Interaction(
-                        "CationPi", f"{prot_atom.GetSymbol()}{prot_idx}",
-                        f"Ring{lr[0]}", d,
-                    ))
+                d = _centroid_dist(pp_t, lc)
+                if d < cat_dist:
+                    res = _get_residue_label(pa)
+                    key = f"CatPi_{res}"
+                    if key not in seen:
+                        seen.add(key)
+                        interactions.append(Interaction("CationPi", res, f"Ring{lr[0]}", d, res))
 
     return interactions
 

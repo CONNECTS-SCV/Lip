@@ -93,16 +93,16 @@ def similarity_component(
     )
 
 
-def hbd_component(max_val: int, weight: float = 1.0) -> ScoringComponent:
-    return ScoringComponent("HBondDonors", "hbd", weight, _reverse_sigmoid(max_val))
+def hbd_component(low: int, high: int, weight: float = 1.0) -> ScoringComponent:
+    return ScoringComponent("HBondDonors", "hbd", weight, _double_sigmoid(low, high))
 
 
-def hba_component(max_val: int, weight: float = 1.0) -> ScoringComponent:
-    return ScoringComponent("HBondAcceptors", "hba", weight, _reverse_sigmoid(max_val))
+def hba_component(low: int, high: int, weight: float = 1.0) -> ScoringComponent:
+    return ScoringComponent("HBondAcceptors", "hba", weight, _double_sigmoid(low, high))
 
 
-def rotbond_component(max_val: int, weight: float = 1.0) -> ScoringComponent:
-    return ScoringComponent("NumRotBond", "rotbond", weight, _reverse_sigmoid(max_val))
+def rotbond_component(low: int, high: int, weight: float = 1.0) -> ScoringComponent:
+    return ScoringComponent("NumRotBond", "rotbond", weight, _double_sigmoid(low, high))
 
 
 def num_rings_component(low: int, high: int, weight: float = 1.0) -> ScoringComponent:

@@ -36,9 +36,9 @@ def normalize_score(
 # ---------------------------------------------------------------------------
 
 def reinvent_double_sigmoid(low: float, high: float,
-                            coef_div: float = 100.0,
-                            coef_si: float = 150.0,
-                            coef_se: float = 150.0) -> dict:
+                            coef_div: float = 500.0,
+                            coef_si: float = 20.0,
+                            coef_se: float = 20.0) -> dict:
     """Build a REINVENT4 double_sigmoid transform dict."""
     return {
         "type": "double_sigmoid",

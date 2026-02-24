@@ -56,9 +56,9 @@ def _property_range_to_component(params: dict, weight: float) -> ScoringComponen
         "molecular_weight": lambda: mw_component(lo, hi, weight),
         "logp": lambda: logp_component(lo, hi, weight),
         "tpsa": lambda: tpsa_component(lo, hi, weight),
-        "hbd": lambda: hbd_component(hi, weight),
-        "hba": lambda: hba_component(hi, weight),
-        "rotatable_bonds": lambda: rotbond_component(hi, weight),
+        "hbd": lambda: hbd_component(lo, hi, weight),
+        "hba": lambda: hba_component(lo, hi, weight),
+        "rotatable_bonds": lambda: rotbond_component(lo, hi, weight),
     }
     factory = prop_map.get(prop)
     return factory() if factory else None
