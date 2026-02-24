@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -334,7 +335,7 @@ class ReinventWrapper(BaseGenerator):
     def _run_reinvent(
         self, cmd: list[str], cwd: str, timeout: int,
     ) -> subprocess.CompletedProcess:
-        """Run REINVENT4 subprocess with communicate() to prevent pipe deadlock."""
+        """Run REINVENT4 subprocess with real-time log streaming."""
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -350,15 +351,41 @@ class ReinventWrapper(BaseGenerator):
             **kwargs,
         )
         self._process = proc
+
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+
+        def _stream(pipe, lines, level):
+            for line in pipe:
+                line = line.rstrip()
+                if line:
+                    log.log(level, "[REINVENT4] %s", line)
+                    lines.append(line)
+
+        t_out = threading.Thread(
+            target=_stream, args=(proc.stdout, stdout_lines, logging.DEBUG), daemon=True,
+        )
+        t_err = threading.Thread(
+            target=_stream, args=(proc.stderr, stderr_lines, logging.INFO), daemon=True,
+        )
+        t_out.start()
+        t_err.start()
+
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             self.stop()
-            stdout, stderr = proc.communicate()
+            proc.wait()
         finally:
             self._process = None
 
-        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+        t_out.join(timeout=5)
+        t_err.join(timeout=5)
+
+        return subprocess.CompletedProcess(
+            proc.args, proc.returncode,
+            "\n".join(stdout_lines), "\n".join(stderr_lines),
+        )
 
     def _parse_rl_csv(self, filepath: str) -> dict:
         """Parse REINVENT4 RL summary CSV with step column and component scores.
