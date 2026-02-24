@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
@@ -271,8 +272,8 @@ class ReinventWrapper(BaseGenerator):
         stages: list[StageConfig],
         output_dir: str | None = None,
         inception_smiles_file: str | None = None,
-    ) -> subprocess.Popen:
-        """Launch REINVENT4 staged_learning subprocess.
+    ) -> dict:
+        """Run REINVENT4 staged_learning and return parsed results.
 
         Args:
             stages: List of stage configurations.
@@ -280,7 +281,7 @@ class ReinventWrapper(BaseGenerator):
             inception_smiles_file: CSV file with seed SMILES for inception.
 
         Returns:
-            Running subprocess.Popen object.
+            dict with success, scores_by_step, molecules_by_stage, checkpoint_path.
         """
         output_dir = output_dir or self.work_dir
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -294,22 +295,129 @@ class ReinventWrapper(BaseGenerator):
 
         log.info(f"Starting REINVENT4: {' '.join(cmd)}")
 
-        # Use CREATE_NEW_PROCESS_GROUP on Windows, setsid on Unix
+        total_steps = sum(s.max_steps for s in stages)
+        timeout = min(max(600, total_steps * 300), 14400)
+
+        result = self._run_reinvent(cmd, output_dir, timeout)
+
+        if result.returncode != 0:
+            log.error(f"REINVENT4 failed:\n{result.stderr[-1000:] if result.stderr else ''}")
+            return {"success": False, "error": result.stderr[-1000:] if result.stderr else "unknown"}
+
+        # Parse CSV results
+        scores_by_step: dict[int, list] = {}
+        molecules_by_stage: dict[int, list] = {}
+        for i in range(len(stages)):
+            csv_path = Path(output_dir) / f"staged_learning_{i + 1}.csv"
+            if csv_path.exists():
+                parsed = self._parse_rl_csv(str(csv_path))
+                scores_by_step[i + 1] = parsed["steps"]
+                molecules_by_stage[i + 1] = parsed["molecules"]
+
+        # Find and load checkpoint
+        chkpt_path = None
+        for i in range(len(stages) - 1, -1, -1):
+            p = stages[i].chkpt_file or str(Path(output_dir) / f"agent_stage{i + 1}.chkpt")
+            if Path(p).exists():
+                chkpt_path = p
+                break
+        if chkpt_path:
+            self.agent_model = chkpt_path
+
+        return {
+            "success": True,
+            "checkpoint_path": chkpt_path,
+            "output_dir": output_dir,
+            "scores_by_step": scores_by_step,
+            "molecules_by_stage": molecules_by_stage,
+        }
+
+    def _run_reinvent(
+        self, cmd: list[str], cwd: str, timeout: int,
+    ) -> subprocess.CompletedProcess:
+        """Run REINVENT4 subprocess with communicate() to prevent pipe deadlock."""
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["preexec_fn"] = os.setsid
 
-        self._process = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=output_dir,
+            text=True,
+            cwd=cwd,
             **kwargs,
         )
+        self._process = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.stop()
+            stdout, stderr = proc.communicate()
+        finally:
+            self._process = None
 
-        return self._process
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+    def _parse_rl_csv(self, filepath: str) -> dict:
+        """Parse REINVENT4 RL summary CSV with step column and component scores.
+
+        Returns:
+            dict with "steps" (per-step aggregated) and "molecules" (per-molecule data).
+        """
+        _META_COLS = {
+            "Agent", "Prior", "Target", "Score",
+            "SMILES", "SMILES_state", "Scaffold", "step",
+        }
+
+        steps: dict[int, list[float]] = {}
+        molecules: list[dict] = []
+
+        with open(filepath) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    step = int(row.get("step", 0))
+                    score = float(row.get("Score", 0))
+                    smiles = row.get("SMILES", "")
+                    smiles_state = row.get("SMILES_state", "0")
+
+                    steps.setdefault(step, []).append(score)
+
+                    if smiles_state == "1" and smiles and score > 0:
+                        component_scores = {}
+                        raw_values = {}
+                        for key, val in row.items():
+                            if key in _META_COLS:
+                                continue
+                            if key.endswith(" (raw)"):
+                                try:
+                                    raw_values[key[:-6]] = float(val)
+                                except (ValueError, TypeError):
+                                    pass
+                            else:
+                                try:
+                                    component_scores[key] = float(val)
+                                except (ValueError, TypeError):
+                                    pass
+
+                        molecules.append({
+                            "smiles": smiles,
+                            "total_score": score,
+                            "scores": component_scores,
+                            "raw_values": raw_values,
+                            "step": step,
+                        })
+                except (ValueError, KeyError):
+                    continue
+
+        step_summaries = [
+            {"step": s, "mean_score": sum(sc) / len(sc), "max_score": max(sc), "n": len(sc)}
+            for s, sc in sorted(steps.items())
+        ]
+        return {"steps": step_summaries, "molecules": molecules}
 
     def stop(self) -> None:
         """Stop the running REINVENT4 subprocess."""

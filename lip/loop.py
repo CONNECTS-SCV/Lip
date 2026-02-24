@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import logging
 import math
 from dataclasses import dataclass, field
@@ -207,65 +206,53 @@ class OptimizationLoop:
                 chkpt_file=chkpt_path,
             )
 
-            process = self.generator.run_staged_learning(
+            result = self.generator.run_staged_learning(
                 stages=[stage],
                 output_dir=str(chunk_output_dir),
                 inception_smiles_file=inception_file,
             )
-            process.wait()
 
-            if process.returncode != 0:
-                stderr = process.stderr.read().decode() if process.stderr else ""
-                stdout = process.stdout.read().decode() if process.stdout else ""
+            if not result.get("success"):
                 log.error(
-                    f"REINVENT4 exited with code {process.returncode}\n"
-                    f"  stderr: {stderr[-1000:]}\n"
-                    f"  stdout: {stdout[-500:]}"
+                    f"REINVENT4 chunk {chunk_idx} failed: "
+                    f"{result.get('error', 'unknown')}"
                 )
-            else:
-                log.info(f"REINVENT4 chunk {chunk_idx} completed successfully")
+                continue
 
-            # Parse RL CSV for per-step scores and molecules
+            log.info(f"REINVENT4 chunk {chunk_idx} completed successfully")
+
+            # Extract molecules from parsed results
             chunk_molecules: list[dict[str, Any]] = []
-            step_scores: list[float] = []
-
-            rl_csv = chunk_output_dir / "staged_learning_1.csv"
-            if rl_csv.exists():
-                with open(rl_csv) as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        try:
-                            score = float(row.get("Score", 0))
-                            smiles = row.get("SMILES", "")
-                            smiles_state = row.get("SMILES_state", "0")
-
-                            step_scores.append(score)
-
-                            if smiles_state == "1" and smiles and score > 0:
-                                chunk_molecules.append({
-                                    "smiles": smiles,
-                                    "score": score,
-                                })
-                        except (ValueError, KeyError):
-                            continue
+            molecules_by_stage = result.get("molecules_by_stage", {})
+            for stage_num, mols in molecules_by_stage.items():
+                for mol in mols:
+                    chunk_molecules.append({
+                        "smiles": mol["smiles"],
+                        "score": mol["total_score"],
+                        "scores": mol.get("scores", {}),
+                        "raw_values": mol.get("raw_values", {}),
+                        "step": mol.get("step", 0),
+                    })
 
             # Save per-round CSV (same format as manual mode)
             if chunk_molecules:
                 save_round_results(chunk_idx, chunk_molecules, str(output_dir))
 
-            # Create RoundResult for this step
-            if step_scores:
-                rr = RoundResult(
-                    round_num=chunk_idx,
-                    molecules=chunk_molecules,
-                    best_score=max(step_scores),
-                    avg_score=sum(step_scores) / len(step_scores),
-                    n_valid=len(chunk_molecules),
-                    n_total=self.config.generator.batch_size,
-                )
-                all_results.append(rr)
-                if self._on_round_complete:
-                    self._on_round_complete(rr)
+            # Create RoundResult from parsed step data
+            scores_by_step = result.get("scores_by_step", {})
+            for stage_num, steps_data in scores_by_step.items():
+                for step_data in steps_data:
+                    rr = RoundResult(
+                        round_num=chunk_idx,
+                        molecules=chunk_molecules,
+                        best_score=step_data["max_score"],
+                        avg_score=step_data["mean_score"],
+                        n_valid=len(chunk_molecules),
+                        n_total=step_data.get("n", self.config.generator.batch_size),
+                    )
+                    all_results.append(rr)
+                    if self._on_round_complete:
+                        self._on_round_complete(rr)
 
             # Update inception buffer
             if inception_enabled and chunk_molecules:
@@ -274,10 +261,6 @@ class OptimizationLoop:
                     f"Inception buffer: {inception.size}/{memory_size} "
                     f"(+{n_added} new, mode={inception.retention})"
                 )
-
-            # Load checkpoint for next chunk
-            if Path(chkpt_path).exists():
-                self.generator.load_checkpoint(chkpt_path)
 
             self.state.current_chunk = chunk_idx + 1
             self.state.best_score = max(
