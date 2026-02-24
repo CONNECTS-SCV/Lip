@@ -154,7 +154,7 @@ def save_progress_plot(
         log.warning("matplotlib not installed — skipping progress plot")
         return
 
-    steps = [r.round_num + 1 for r in results]
+    steps = [r.round_num for r in results]
     bests = [r.best_score for r in results]
     means = [r.avg_score for r in results]
 
@@ -195,8 +195,15 @@ def save_top_molecules(
     all_mols = []
     for r in results:
         for m in r.molecules:
-            mol = dict(m)
-            mol.setdefault("round", r.round_num)
+            mol = {
+                "smiles": m.get("smiles", ""),
+                "score": m.get("score", 0.0),
+                "round": r.round_num,
+            }
+            for k, v in m.get("scores", {}).items():
+                mol[k] = v
+            for k, v in m.get("raw_values", {}).items():
+                mol[f"raw_{k}"] = v
             all_mols.append(mol)
 
     if not all_mols:
