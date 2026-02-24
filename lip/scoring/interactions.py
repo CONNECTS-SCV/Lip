@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-import subprocess
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolDescriptors
@@ -94,39 +91,25 @@ def analyze_pose(
 
 
 def _pdbqt_to_mol(pdbqt_string: str) -> Chem.Mol | None:
-    """Convert PDBQT string to RDKit Mol via obabel."""
-    import os
+    """Convert PDBQT string to RDKit Mol by stripping PDBQT extra columns.
 
-    pdbqt_path = None
-    pdb_path = None
+    PDBQT is PDB with charge/type columns appended after column 54.
+    Stripping those and reading as PDB block avoids the obabel dependency
+    (and prevents sqm/antechamber from being spawned).
+    """
     try:
-        with tempfile.NamedTemporaryFile(
-            suffix=".pdbqt", mode="w", delete=False
-        ) as f:
-            f.write(pdbqt_string)
-            pdbqt_path = f.name
-
-        pdb_f = tempfile.NamedTemporaryFile(suffix=".pdb", delete=False)
-        pdb_path = pdb_f.name
-        pdb_f.close()
-
-        subprocess.run(
-            ["obabel", pdbqt_path, "-O", pdb_path],
-            capture_output=True, timeout=30,
-        )
-
-        mol = Chem.MolFromPDBFile(pdb_path, removeHs=False)
-        return mol
+        pdb_lines = []
+        for line in pdbqt_string.splitlines():
+            record = line[:6].strip()
+            if record in ("ATOM", "HETATM"):
+                pdb_lines.append(line[:66].rstrip())
+            elif record in ("MODEL", "ENDMDL", "END", "TER", "CONECT"):
+                pdb_lines.append(line.rstrip())
+        pdb_block = "\n".join(pdb_lines) + "\n"
+        return Chem.MolFromPDBBlock(pdb_block, removeHs=False, sanitize=False)
     except Exception as e:
         log.debug(f"PDBQT conversion failed: {e}")
         return None
-    finally:
-        for p in [pdbqt_path, pdb_path]:
-            if p:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
 
 
 # ---------------------------------------------------------------------------

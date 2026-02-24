@@ -73,9 +73,10 @@ def prepare_ligand_pdbqt(smiles: str) -> tuple[str, bool]:
 
 
 def prepare_receptor_pdbqt(pdb_path: str, output_path: str):
-    """Convert PDB to PDBQT via OpenBabel."""
+    """Convert PDB to PDBQT via OpenBabel (Gasteiger charges, no sqm)."""
     result = subprocess.run(
-        ["obabel", pdb_path, "-O", output_path, "-xrh"],
+        ["obabel", pdb_path, "-O", output_path, "-xrh",
+         "--partialcharge", "gasteiger"],
         capture_output=True, text=True, timeout=60,
     )
     if result.returncode != 0:
