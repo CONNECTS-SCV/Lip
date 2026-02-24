@@ -295,8 +295,7 @@ class ReinventWrapper(BaseGenerator):
 
         log.info(f"Starting REINVENT4: {' '.join(cmd)}")
 
-        total_steps = sum(s.max_steps for s in stages)
-        timeout = min(max(600, total_steps * 300), 14400)
+        timeout = 1800  # 30 minutes per chunk
 
         result = self._run_reinvent(cmd, output_dir, timeout)
 
