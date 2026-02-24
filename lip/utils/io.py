@@ -162,12 +162,14 @@ def save_progress_plot(
     ax.plot(steps, bests, "o-", color="#2563eb", label="Best", linewidth=2, markersize=5)
     ax.plot(steps, means, "s-", color="#f97316", label="Mean", linewidth=2, markersize=5)
 
+    from matplotlib.ticker import MaxNLocator
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.set_xlabel("Step")
     ax.set_ylabel("Score")
     ax.set_title("Optimization Progress")
     ax.legend()
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(left=0.5)
+    ax.set_xlim(left=1 - 0.3, right=max(steps) + 0.3)
     ax.set_ylim(bottom=0.0, top=1.0)
 
     filepath = Path(output_dir) / "progress.png"
