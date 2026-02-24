@@ -62,6 +62,7 @@ class DockingTransform:
 @dataclass
 class DockingConfig:
     enabled: bool = True
+    method: str = "auto"  # "vina" | "unidock" | "auto"
     exhaustiveness: int = 8
     box_size: int = 25
     weight: float = 0.5
@@ -224,6 +225,7 @@ class LipConfig:
             "diversity_threshold": ("optimization", "diversity_threshold"),
             "checkpoint_every": ("optimization", "checkpoint_every"),
             # Docking
+            "docking_method": ("docking", "method"),
             "exhaustiveness": ("docking", "exhaustiveness"),
             "box_size": ("docking", "box_size"),
             "docking_weight": ("docking", "weight"),

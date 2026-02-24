@@ -14,7 +14,7 @@ from lip.constraints.base import ConstraintResult
 from lip.constraints.registry import create_constraint
 from lip.generator.reinvent import ReinventWrapper, StageConfig
 from lip.scoring.aggregator import ScoreAggregator
-from lip.scoring.docking import BaseDockingScorer, VinaDockingScorer
+from lip.scoring.docking import BaseDockingScorer, VinaDockingScorer, create_docking_scorer
 from lip.utils.chem import (
     is_valid, canonicalize, check_lipinski, check_pains,
 )
@@ -114,7 +114,13 @@ class OptimizationLoop:
             if config.docking.enabled and config.receptor_pdb:
                 center = tuple(config.pocket_center)
                 box = (config.docking.box_size,) * 3
-                loop.docking_scorer = VinaDockingScorer(
+                method = config.docking.method
+                if method == "auto":
+                    from lip.scoring.docking import _unidock_available
+                    method = "unidock" if _unidock_available() else "vina"
+                    log.info(f"Auto-detected docking method: {method}")
+                loop.docking_scorer = create_docking_scorer(
+                    method=method,
                     receptor_pdb=config.receptor_pdb,
                     pocket_center=center,
                     box_size=box,

@@ -151,7 +151,8 @@ class ComponentBuilder:
             f"--receptor {cfg.receptor_pdb} "
             f"--center {center} "
             f"--box-size {box} "
-            f"--exhaustiveness {cfg.docking.exhaustiveness}"
+            f"--exhaustiveness {cfg.docking.exhaustiveness} "
+            f"--method {cfg.docking.method}"
         )
 
         if cfg.docking.analyze_interactions:

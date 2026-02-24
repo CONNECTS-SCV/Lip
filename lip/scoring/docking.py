@@ -21,6 +21,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 import tempfile
 from abc import ABC, abstractmethod
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -267,12 +268,19 @@ def vina_external_process_main():
         parser.add_argument("--exhaustiveness", type=int, default=8)
         parser.add_argument("--analyze-interactions", action="store_true")
         parser.add_argument("--n-workers", type=int, default=0)
+        parser.add_argument("--method", default="vina", choices=["vina", "unidock", "auto"])
         args = parser.parse_args()
 
         center = tuple(float(x) for x in args.center.split(","))
         box_size = tuple(float(x) for x in args.box_size.split(","))
 
-        log.info(f"Receptor: {args.receptor}")
+        # Resolve docking method
+        method = args.method
+        if method == "auto":
+            method = "unidock" if _unidock_available() else "vina"
+        use_unidock = (method == "unidock")
+
+        log.info(f"Receptor: {args.receptor}, Method: {method}")
         log.info(f"Center: {center}, Box: {box_size}, Exhaustiveness: {args.exhaustiveness}")
 
         # Read SMILES from stdin (plain text, one per line)
@@ -309,11 +317,32 @@ def vina_external_process_main():
 
         # Dock molecules
         results = None
-        if n_workers > 1:
-            log.info(f"Parallel docking with {n_workers} workers")
+
+        if use_unidock:
+            # GPU batch docking via Uni-Dock
+            log.info("GPU docking with Uni-Dock")
+            try:
+                scorer = UniDockScorer(
+                    receptor_pdb=args.receptor,
+                    pocket_center=center,
+                    box_size=box_size,
+                    exhaustiveness=args.exhaustiveness,
+                )
+                dock_results = scorer.dock_batch(smiles_list)
+                results = [
+                    (r.smiles, r.score if r.success else 0.0, r.success, r.pose_pdbqt)
+                    for r in dock_results
+                ]
+            except Exception as e:
+                log.error(f"Uni-Dock failed: {e}, falling back to Vina")
+                results = None
+
+        if results is None and n_workers > 1:
+            log.info(f"Parallel Vina docking with {n_workers} workers")
             try:
                 with ProcessPoolExecutor(
                     max_workers=n_workers,
+                    mp_context=multiprocessing.get_context("spawn"),
                     initializer=_init_worker,
                     initargs=(rec_pdbqt, list(center), list(box_size), args.exhaustiveness),
                 ) as pool:
@@ -323,7 +352,7 @@ def vina_external_process_main():
                 results = None
 
         if results is None:
-            log.info("Sequential docking (single worker)")
+            log.info("Sequential Vina docking (single worker)")
             scorer = VinaDockingScorer(
                 receptor_pdb=args.receptor,
                 pocket_center=center,
@@ -384,11 +413,183 @@ def vina_external_process_main():
 
 
 # ---------------------------------------------------------------------------
+# Uni-Dock (GPU)
+# ---------------------------------------------------------------------------
+
+def _unidock_available() -> bool:
+    """Check if Uni-Dock CLI is available."""
+    import shutil
+    return shutil.which("unidock") is not None
+
+
+class UniDockScorer(BaseDockingScorer):
+    """GPU-accelerated docking via Uni-Dock.
+
+    Uni-Dock is Vina-compatible (same scoring function, same PDBQT format)
+    but runs on NVIDIA GPU. Falls back to VinaDockingScorer if unavailable.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not _unidock_available():
+            raise RuntimeError(
+                "Uni-Dock not found. Install with: "
+                "pip install unidock  (or ensure 'unidock' is on PATH)"
+            )
+
+    def dock_smiles(self, smiles: str) -> DockingResult:
+        """Dock single SMILES via Uni-Dock CLI."""
+        try:
+            pdbqt_str, is_ok = prepare_ligand_pdbqt(smiles)
+            if not is_ok:
+                return DockingResult(smiles=smiles, score=0.0, success=False)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                lig_path = os.path.join(tmpdir, "ligand.pdbqt")
+                out_path = os.path.join(tmpdir, "out.pdbqt")
+                with open(lig_path, "w") as f:
+                    f.write(pdbqt_str)
+
+                cx, cy, cz = self.pocket_center
+                sx, sy, sz = self.box_size
+                cmd = [
+                    "unidock",
+                    "--receptor", self._rec_pdbqt,
+                    "--ligand", lig_path,
+                    "--center_x", str(cx),
+                    "--center_y", str(cy),
+                    "--center_z", str(cz),
+                    "--size_x", str(sx),
+                    "--size_y", str(sy),
+                    "--size_z", str(sz),
+                    "--exhaustiveness", str(self.exhaustiveness),
+                    "--num_modes", "1",
+                    "--dir", tmpdir,
+                    "--out", out_path,
+                ]
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    log.warning(f"Uni-Dock failed for {smiles}: {result.stderr}")
+                    return DockingResult(smiles=smiles, score=0.0, success=False)
+
+                with open(out_path) as f:
+                    pose = f.read()
+
+                energy = self._parse_energy(pose)
+                return DockingResult(
+                    smiles=smiles, score=energy, success=True, pose_pdbqt=pose,
+                )
+        except Exception as e:
+            log.warning(f"Uni-Dock docking failed for {smiles}: {e}")
+            return DockingResult(smiles=smiles, score=0.0, success=False)
+
+    def dock_batch(self, smiles_list: list[str]) -> list[DockingResult]:
+        """Batch dock via Uni-Dock --ligand_index (single GPU call)."""
+        if not smiles_list:
+            return []
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Prepare all ligand PDBQTs
+                lig_paths = []
+                valid_indices = []
+                results = [
+                    DockingResult(smiles=smi, score=0.0, success=False)
+                    for smi in smiles_list
+                ]
+
+                for i, smi in enumerate(smiles_list):
+                    pdbqt_str, is_ok = prepare_ligand_pdbqt(smi)
+                    if not is_ok:
+                        continue
+                    lig_path = os.path.join(tmpdir, f"lig_{i}.pdbqt")
+                    with open(lig_path, "w") as f:
+                        f.write(pdbqt_str)
+                    lig_paths.append(lig_path)
+                    valid_indices.append(i)
+
+                if not lig_paths:
+                    return results
+
+                # Write ligand index file
+                index_path = os.path.join(tmpdir, "ligands.txt")
+                with open(index_path, "w") as f:
+                    for p in lig_paths:
+                        f.write(p + "\n")
+
+                out_dir = os.path.join(tmpdir, "out")
+                os.makedirs(out_dir)
+
+                cx, cy, cz = self.pocket_center
+                sx, sy, sz = self.box_size
+                cmd = [
+                    "unidock",
+                    "--receptor", self._rec_pdbqt,
+                    "--ligand_index", index_path,
+                    "--center_x", str(cx),
+                    "--center_y", str(cy),
+                    "--center_z", str(cz),
+                    "--size_x", str(sx),
+                    "--size_y", str(sy),
+                    "--size_z", str(sz),
+                    "--exhaustiveness", str(self.exhaustiveness),
+                    "--num_modes", "1",
+                    "--dir", out_dir,
+                ]
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=600,
+                )
+                if proc.returncode != 0:
+                    log.error(f"Uni-Dock batch failed: {proc.stderr}")
+                    return results
+
+                # Parse output files
+                for lig_path, idx in zip(lig_paths, valid_indices):
+                    stem = Path(lig_path).stem
+                    out_file = os.path.join(out_dir, f"{stem}_out.pdbqt")
+                    if not os.path.exists(out_file):
+                        continue
+                    with open(out_file) as f:
+                        pose = f.read()
+                    energy = self._parse_energy(pose)
+                    results[idx] = DockingResult(
+                        smiles=smiles_list[idx],
+                        score=energy,
+                        success=True,
+                        pose_pdbqt=pose,
+                    )
+
+                n_ok = sum(1 for r in results if r.success)
+                log.info(f"Uni-Dock batch: {n_ok}/{len(smiles_list)} succeeded")
+                return results
+
+        except Exception as e:
+            log.error(f"Uni-Dock batch docking failed: {e}")
+            return [
+                DockingResult(smiles=smi, score=0.0, success=False)
+                for smi in smiles_list
+            ]
+
+    @staticmethod
+    def _parse_energy(pdbqt_str: str) -> float:
+        """Extract best binding energy from PDBQT REMARK line."""
+        for line in pdbqt_str.splitlines():
+            if line.startswith("REMARK VINA RESULT"):
+                parts = line.split()
+                if len(parts) >= 4:
+                    return float(parts[3])
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
 # Docking scorer registry
 # ---------------------------------------------------------------------------
 
 DOCKING_REGISTRY: dict[str, type[BaseDockingScorer]] = {
     "vina": VinaDockingScorer,
+    "unidock": UniDockScorer,
 }
 
 
