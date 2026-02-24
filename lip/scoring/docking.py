@@ -486,7 +486,7 @@ class UniDockScorer(BaseDockingScorer):
             return DockingResult(smiles=smiles, score=0.0, success=False)
 
     def dock_batch(self, smiles_list: list[str]) -> list[DockingResult]:
-        """Batch dock via Uni-Dock --ligand_index (single GPU call)."""
+        """Batch dock via Uni-Dock --gpu_batch (true GPU parallel docking)."""
         if not smiles_list:
             return []
 
@@ -513,12 +513,6 @@ class UniDockScorer(BaseDockingScorer):
                 if not lig_paths:
                     return results
 
-                # Write ligand index file
-                index_path = os.path.join(tmpdir, "ligands.txt")
-                with open(index_path, "w") as f:
-                    for p in lig_paths:
-                        f.write(p + "\n")
-
                 out_dir = os.path.join(tmpdir, "out")
                 os.makedirs(out_dir)
 
@@ -527,7 +521,7 @@ class UniDockScorer(BaseDockingScorer):
                 cmd = [
                     "unidock",
                     "--receptor", self._rec_pdbqt,
-                    "--ligand_index", index_path,
+                    "--gpu_batch", *lig_paths,
                     "--center_x", str(cx),
                     "--center_y", str(cy),
                     "--center_z", str(cz),
@@ -537,12 +531,13 @@ class UniDockScorer(BaseDockingScorer):
                     "--exhaustiveness", str(self.exhaustiveness),
                     "--num_modes", "1",
                     "--dir", out_dir,
+                    "--verbosity", "0",
                 ]
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=600,
                 )
                 if proc.returncode != 0:
-                    log.error(f"Uni-Dock batch failed: {proc.stderr}")
+                    log.error(f"Uni-Dock gpu_batch failed: {proc.stderr}")
                     return results
 
                 # Parse output files
@@ -562,7 +557,7 @@ class UniDockScorer(BaseDockingScorer):
                     )
 
                 n_ok = sum(1 for r in results if r.success)
-                log.info(f"Uni-Dock batch: {n_ok}/{len(smiles_list)} succeeded")
+                log.info(f"Uni-Dock gpu_batch: {n_ok}/{len(smiles_list)} succeeded")
                 return results
 
         except Exception as e:
