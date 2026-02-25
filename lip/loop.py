@@ -149,15 +149,11 @@ class OptimizationLoop:
     # -----------------------------------------------------------------------
 
     def _run_managed_mode(self) -> list[RoundResult]:
-        """Run RL via REINVENT4 staged_learning in a single process.
+        """Run RL via REINVENT4: 1 stage per call, N calls with checkpoint chaining.
 
-        REINVENT4 internally handles all N steps:
-        - Per-step weight updates
-        - Inception / experience replay
-        - Diversity filter
-        - Early termination via max_score
-
-        After completion, parse CSV (step column) for per-step results.
+        Each step is a separate REINVENT4 invocation to ensure:
+        - Per-step checkpoint saving
+        - Clean resource release between steps
         """
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -169,44 +165,40 @@ class OptimizationLoop:
         chkpt_dir = output_dir / "checkpoints"
         chkpt_dir.mkdir(parents=True, exist_ok=True)
 
-        # N stages × 1 step: checkpoint saved per step, RL maintained across stages
-        # max_score=0.0 so REINVENT4 treats each stage as "successful"
-        # (hitting max_steps without max_score terminates ALL stages)
-        stages = []
-        for i in range(n_steps):
-            stages.append(StageConfig(
+        log.info(f"Starting REINVENT4 RL ({n_steps} steps, 1 call per step)")
+
+        all_results: list[RoundResult] = []
+
+        for step in range(n_steps):
+            step_num = step + 1
+            log.info(f"Step {step_num}/{n_steps}")
+
+            stage = StageConfig(
                 max_steps=1,
                 min_steps=1,
                 max_score=1.0,
                 scoring_components=components,
-                chkpt_file=str(chkpt_dir / f"agent_step{i + 1}.chkpt"),
-            ))
-
-        log.info(f"Starting REINVENT4 staged_learning ({n_steps} steps)")
-
-        # Single REINVENT4 execution with N stages
-        result = self.generator.run_staged_learning(
-            stages=stages,
-            output_dir=str(output_dir / "rl_output"),
-        )
-
-        if not result.get("success"):
-            raise RuntimeError(
-                f"REINVENT4 failed: {result.get('error', 'unknown')}"
+                chkpt_file=str(chkpt_dir / f"agent_step{step_num}.chkpt"),
             )
 
-        log.info("REINVENT4 completed, parsing results...")
+            step_output = str(output_dir / "rl_output" / f"step_{step_num}")
+            result = self.generator.run_staged_learning(
+                stages=[stage],
+                output_dir=step_output,
+            )
 
-        # Parse per-step data from CSV (each stage = 1 step)
-        all_results: list[RoundResult] = []
-        scores_by_step = result.get("scores_by_step", {})
-        molecules_by_stage = result.get("molecules_by_stage", {})
+            if not result.get("success"):
+                raise RuntimeError(
+                    f"REINVENT4 failed at step {step_num}: "
+                    f"{result.get('error', 'unknown')}"
+                )
 
-        # Each stage_num maps to a global step number
-        for stage_num in sorted(scores_by_step.keys()):
-            step_num = stage_num  # stage 1 = step 1, stage 2 = step 2, ...
-            steps_data = scores_by_step[stage_num]
-            stage_mols = molecules_by_stage.get(stage_num, [])
+            # Parse results (single stage → key=1)
+            scores_by_step = result.get("scores_by_step", {})
+            molecules_by_stage = result.get("molecules_by_stage", {})
+
+            steps_data = scores_by_step.get(1, [])
+            stage_mols = molecules_by_stage.get(1, [])
 
             step_mols = [{
                 "smiles": mol["smiles"],
@@ -215,7 +207,9 @@ class OptimizationLoop:
                 "raw_values": mol.get("raw_values", {}),
             } for mol in stage_mols]
 
-            step_data = steps_data[0] if steps_data else {"max_score": 0, "mean_score": 0, "n": 0}
+            step_data = steps_data[0] if steps_data else {
+                "max_score": 0, "mean_score": 0, "n": 0,
+            }
 
             rr = RoundResult(
                 round_num=step_num,
@@ -230,6 +224,11 @@ class OptimizationLoop:
             if step_mols:
                 save_round_results(step_num, step_mols, str(output_dir))
 
+            log.info(
+                f"Step {step_num} done: best={step_data['max_score']:.3f}, "
+                f"avg={step_data['mean_score']:.3f}, n={len(step_mols)}"
+            )
+
         # Final state + outputs
         self.state.best_score = max(
             (r.best_score for r in all_results), default=0.0,
@@ -240,6 +239,7 @@ class OptimizationLoop:
         save_progress_plot(all_results, output_dir)
         save_top_molecules(all_results, output_dir)
         return all_results
+
 
     # -----------------------------------------------------------------------
     # Manual mode: generate -> filter -> score -> select
