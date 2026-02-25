@@ -170,12 +170,14 @@ class OptimizationLoop:
         chkpt_dir.mkdir(parents=True, exist_ok=True)
 
         # N stages × 1 step: checkpoint saved per step, RL maintained across stages
+        # max_score=0.0 so REINVENT4 treats each stage as "successful"
+        # (hitting max_steps without max_score terminates ALL stages)
         stages = []
         for i in range(n_steps):
             stages.append(StageConfig(
                 max_steps=1,
                 min_steps=1,
-                max_score=self.config.optimization.max_score,
+                max_score=0.0,
                 scoring_components=components,
                 chkpt_file=str(chkpt_dir / f"agent_step{i + 1}.chkpt"),
             ))
