@@ -133,17 +133,21 @@ def _run_pocket2mol(config: LipConfig) -> None:
 
     log.info("Running Pocket2Mol for reference molecule generation...")
 
-    sdf_paths = run_pocket2mol(
-        pdb_path=config.receptor_pdb,
-        pocket_center=config.pocket_center,
-        bbox_size=config.pocket2mol.bbox_size,
-        n_samples=config.pocket2mol.n_samples,
-        output_dir=str(Path(config.output_dir) / "pocket2mol"),
-        pocket2mol_dir=config.paths.pocket2mol_dir,
-        conda_env=config.pocket2mol.conda_env,
-        timeout=config.pocket2mol.timeout,
-        device=config.generator.device,
-    )
+    try:
+        sdf_paths = run_pocket2mol(
+            pdb_path=config.receptor_pdb,
+            pocket_center=config.pocket_center,
+            bbox_size=config.pocket2mol.bbox_size,
+            n_samples=config.pocket2mol.n_samples,
+            output_dir=str(Path(config.output_dir) / "pocket2mol"),
+            pocket2mol_dir=config.paths.pocket2mol_dir,
+            conda_env=config.pocket2mol.conda_env,
+            timeout=config.pocket2mol.timeout,
+            device=config.generator.device,
+        )
+    except RuntimeError as e:
+        log.warning(f"Pocket2Mol failed, skipping shape constraint: {e}")
+        return
 
     if not sdf_paths:
         log.warning("Pocket2Mol produced no molecules, skipping shape constraint")
