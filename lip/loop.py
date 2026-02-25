@@ -200,12 +200,22 @@ class OptimizationLoop:
             steps_data = scores_by_step.get(1, [])
             stage_mols = molecules_by_stage.get(1, [])
 
-            step_mols = [{
-                "smiles": mol["smiles"],
-                "score": mol["total_score"],
-                "scores": mol.get("scores", {}),
-                "raw_values": mol.get("raw_values", {}),
-            } for mol in stage_mols]
+            step_mols = []
+            for mol in stage_mols:
+                rec = {
+                    "smiles": mol["smiles"],
+                    "score": mol["total_score"],
+                }
+                scores = mol.get("scores", {})
+                raw_values = mol.get("raw_values", {})
+                for k in scores:
+                    rec[k] = scores[k]
+                    if k in raw_values:
+                        rec[f"{k}_raw"] = raw_values[k]
+                for k in raw_values:
+                    if k not in scores:
+                        rec[f"{k}_raw"] = raw_values[k]
+                step_mols.append(rec)
 
             step_data = steps_data[0] if steps_data else {
                 "max_score": 0, "mean_score": 0, "n": 0,
