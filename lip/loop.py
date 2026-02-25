@@ -166,22 +166,25 @@ class OptimizationLoop:
 
         # Build scoring components
         components = self.component_builder.build_all(self.constraints)
-        chkpt_path = str(output_dir / "checkpoints" / "agent.chkpt")
-        Path(chkpt_path).parent.mkdir(parents=True, exist_ok=True)
+        chkpt_dir = output_dir / "checkpoints"
+        chkpt_dir.mkdir(parents=True, exist_ok=True)
 
-        stage = StageConfig(
-            max_steps=n_steps,
-            min_steps=1,
-            max_score=self.config.optimization.max_score,
-            scoring_components=components,
-            chkpt_file=chkpt_path,
-        )
+        # N stages × 1 step: checkpoint saved per step, RL maintained across stages
+        stages = []
+        for i in range(n_steps):
+            stages.append(StageConfig(
+                max_steps=1,
+                min_steps=1,
+                max_score=self.config.optimization.max_score,
+                scoring_components=components,
+                chkpt_file=str(chkpt_dir / f"agent_step{i + 1}.chkpt"),
+            ))
 
         log.info(f"Starting REINVENT4 staged_learning ({n_steps} steps)")
 
-        # Single REINVENT4 execution
+        # Single REINVENT4 execution with N stages
         result = self.generator.run_staged_learning(
-            stages=[stage],
+            stages=stages,
             output_dir=str(output_dir / "rl_output"),
         )
 
@@ -192,44 +195,38 @@ class OptimizationLoop:
 
         log.info("REINVENT4 completed, parsing results...")
 
-        # Parse per-step data from CSV
+        # Parse per-step data from CSV (each stage = 1 step)
         all_results: list[RoundResult] = []
         scores_by_step = result.get("scores_by_step", {})
         molecules_by_stage = result.get("molecules_by_stage", {})
 
-        # Group molecules by step
-        all_molecules: list[dict] = []
-        for stage_num, mols in molecules_by_stage.items():
-            all_molecules.extend(mols)
+        # Each stage_num maps to a global step number
+        for stage_num in sorted(scores_by_step.keys()):
+            step_num = stage_num  # stage 1 = step 1, stage 2 = step 2, ...
+            steps_data = scores_by_step[stage_num]
+            stage_mols = molecules_by_stage.get(stage_num, [])
 
-        molecules_by_step: dict[int, list[dict[str, Any]]] = {}
-        for mol in all_molecules:
-            s = mol.get("step", 0)
-            molecules_by_step.setdefault(s, []).append({
+            step_mols = [{
                 "smiles": mol["smiles"],
                 "score": mol["total_score"],
                 "scores": mol.get("scores", {}),
                 "raw_values": mol.get("raw_values", {}),
-            })
+            } for mol in stage_mols]
 
-        # Create per-step RoundResult + per-round CSV
-        for stage_num, steps_data in scores_by_step.items():
-            for step_data in steps_data:
-                step_num = step_data["step"]
-                step_mols = molecules_by_step.get(step_num, [])
+            step_data = steps_data[0] if steps_data else {"max_score": 0, "mean_score": 0, "n": 0}
 
-                rr = RoundResult(
-                    round_num=step_num,
-                    molecules=step_mols,
-                    best_score=step_data["max_score"],
-                    avg_score=step_data["mean_score"],
-                    n_valid=len(step_mols),
-                    n_total=step_data.get("n", self.config.generator.batch_size),
-                )
-                all_results.append(rr)
+            rr = RoundResult(
+                round_num=step_num,
+                molecules=step_mols,
+                best_score=step_data["max_score"],
+                avg_score=step_data["mean_score"],
+                n_valid=len(step_mols),
+                n_total=step_data.get("n", self.config.generator.batch_size),
+            )
+            all_results.append(rr)
 
-                if step_mols:
-                    save_round_results(step_num, step_mols, str(output_dir))
+            if step_mols:
+                save_round_results(step_num, step_mols, str(output_dir))
 
         # Final state + outputs
         self.state.best_score = max(
