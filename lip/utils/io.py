@@ -197,15 +197,10 @@ def save_top_molecules(
     all_mols = []
     for r in results:
         for m in r.molecules:
-            mol = {
-                "smiles": m.get("smiles", ""),
-                "score": m.get("score", 0.0),
-                "round": r.round_num,
-            }
-            for k, v in m.get("scores", {}).items():
-                mol[k] = v
-            for k, v in m.get("raw_values", {}).items():
-                mol[f"raw_{k}"] = v
+            mol = {"smiles": m.get("smiles", ""), "score": m.get("score", 0.0), "round": r.round_num}
+            for k, v in m.items():
+                if k not in ("smiles", "score"):
+                    mol[k] = v
             all_mols.append(mol)
 
     if not all_mols:
