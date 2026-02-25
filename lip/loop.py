@@ -177,7 +177,7 @@ class OptimizationLoop:
             stages.append(StageConfig(
                 max_steps=1,
                 min_steps=1,
-                max_score=0.0,
+                max_score=1.0,
                 scoring_components=components,
                 chkpt_file=str(chkpt_dir / f"agent_step{i + 1}.chkpt"),
             ))
