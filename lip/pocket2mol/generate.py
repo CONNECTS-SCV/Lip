@@ -99,7 +99,7 @@ def run_pocket2mol(
         python_bin,
         os.path.join(pocket2mol_dir, "sample_for_pdb.py"),
         "--pdb_path", abs_pdb,
-        "--center", ",".join(str(c) for c in pocket_center),
+        f"--center={','.join(str(c) for c in pocket_center)}",
         "--bbox_size", str(bbox_size),
         "--config", config_path,
         "--device", device,
