@@ -260,7 +260,7 @@ def _redock_top_molecules(
 
     try:
         scorer = create_docking_scorer(
-            method=config.docking.method,
+            method="unidock",
             receptor_pdb=config.receptor_pdb,
             pocket_center=center,
             box_size=(box_sz, box_sz, box_sz),
