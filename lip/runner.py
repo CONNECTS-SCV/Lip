@@ -100,7 +100,11 @@ def run(config: LipConfig, resume_dir: str | None = None) -> RunResult:
     log.info(f"Starting optimization (mode={config.optimization.mode})")
     rounds = loop.run()
 
-    # Step 3: Post-optimization synthesis analysis
+    # Step 3: Re-dock top molecules and save complex PDBs
+    if rounds and config.receptor_pdb:
+        _redock_top_molecules(config, rounds, output_dir)
+
+    # Step 4: Post-optimization synthesis analysis
     if config.synthesis.enabled and rounds:
         _run_synthesis_analysis(config, rounds, output_dir)
 
@@ -235,6 +239,75 @@ def _dock_and_extract_pocket(config: LipConfig) -> None:
         f"center={config.pocket_center}"
     )
 
+
+
+def _redock_top_molecules(
+    config: LipConfig, rounds: list[RoundResult], output_dir: Path,
+    top_n: int = 20,
+) -> None:
+    """Re-dock top N molecules and save protein-ligand complex PDB files."""
+    from lip.scoring.docking import create_docking_scorer
+    from lip.utils.io import collect_top_molecules, save_complex_pdb, save_results_csv
+
+    top_mols = collect_top_molecules(rounds, top_n)
+    if not top_mols:
+        return
+
+    center = tuple(config.pocket_center)
+    box_sz = config.docking.box_size
+
+    log.info(f"Re-docking top {len(top_mols)} molecules...")
+
+    try:
+        scorer = create_docking_scorer(
+            method=config.docking.method,
+            receptor_pdb=config.receptor_pdb,
+            pocket_center=center,
+            box_size=(box_sz, box_sz, box_sz),
+            exhaustiveness=config.docking.exhaustiveness,
+        )
+    except Exception as e:
+        log.warning(f"Failed to create docking scorer for re-docking: {e}")
+        return
+
+    poses_dir = output_dir / "docked_poses"
+    poses_dir.mkdir(parents=True, exist_ok=True)
+
+    docked_records = []
+    for i, mol in enumerate(top_mols):
+        smiles = mol["smiles"]
+        result = scorer.dock_smiles(smiles)
+
+        if not result.success:
+            log.warning(f"Re-docking failed: {smiles[:50]}")
+            continue
+
+        rank = i + 1
+        filename = f"rank{rank:02d}_{result.score:.1f}.pdb"
+
+        save_complex_pdb(
+            receptor_pdb_path=config.receptor_pdb,
+            ligand_pdbqt=result.pose_pdbqt,
+            output_path=poses_dir / filename,
+        )
+
+        docked_records.append({
+            "rank": rank,
+            "smiles": smiles,
+            "docking_score": result.score,
+            "optimization_score": mol.get("score", 0.0),
+            "complex_pdb": filename,
+        })
+
+        log.info(f"  Rank {rank}: {result.score:.2f} kcal/mol — {smiles[:50]}")
+
+    if docked_records:
+        save_results_csv(docked_records, poses_dir / "docking_summary.csv")
+
+    log.info(
+        f"Re-docking complete: {len(docked_records)}/{len(top_mols)} succeeded, "
+        f"saved to {poses_dir}"
+    )
 
 
 def _run_synthesis_analysis(

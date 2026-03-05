@@ -179,20 +179,13 @@ def save_progress_plot(
     log.info(f"Progress plot saved: {filepath}")
 
 
-def save_top_molecules(
+def collect_top_molecules(
     results: list[Any],
-    output_dir: str | Path,
     top_n: int = 20,
-) -> None:
-    """Save top N molecules across all rounds to top_molecules.csv.
-
-    Args:
-        results: List of RoundResult (must have .molecules list of dicts with "score").
-        output_dir: Directory to save top_molecules.csv.
-        top_n: Number of top molecules to save.
-    """
+) -> list[dict[str, Any]]:
+    """Collect top N unique molecules across all rounds, sorted by score descending."""
     if not results:
-        return
+        return []
 
     all_mols = []
     for r in results:
@@ -204,11 +197,60 @@ def save_top_molecules(
             all_mols.append(mol)
 
     if not all_mols:
-        return
+        return []
 
     all_mols.sort(key=lambda m: m.get("score", 0.0), reverse=True)
-    top = all_mols[:top_n]
 
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for mol in all_mols:
+        smi = mol["smiles"]
+        if smi and smi not in seen:
+            seen.add(smi)
+            unique.append(mol)
+            if len(unique) >= top_n:
+                break
+
+    return unique
+
+
+def save_top_molecules(
+    results: list[Any],
+    output_dir: str | Path,
+    top_n: int = 20,
+) -> None:
+    """Save top N molecules across all rounds to top_molecules.csv."""
+    top = collect_top_molecules(results, top_n)
+    if not top:
+        return
     filepath = Path(output_dir) / "top_molecules.csv"
     save_results_csv(top, filepath)
     log.info(f"Top {len(top)} molecules saved: {filepath}")
+
+
+def save_complex_pdb(
+    receptor_pdb_path: str,
+    ligand_pdbqt: str,
+    output_path: str | Path,
+) -> None:
+    """Combine receptor PDB and docked ligand PDBQT into a complex PDB file."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    receptor_lines = []
+    with open(receptor_pdb_path) as f:
+        for line in f:
+            if line.strip() in ("END", "ENDMDL"):
+                continue
+            receptor_lines.append(line.rstrip())
+
+    ligand_lines = []
+    for line in ligand_pdbqt.splitlines():
+        record = line[:6].strip()
+        if record in ("ATOM", "HETATM"):
+            pdb_line = "HETATM" + line[6:17] + "LIG" + line[20:66].rstrip()
+            ligand_lines.append(pdb_line)
+
+    all_lines = receptor_lines + ["TER"] + ligand_lines + ["TER", "END"]
+    with open(output_path, "w") as f:
+        f.write("\n".join(all_lines) + "\n")
