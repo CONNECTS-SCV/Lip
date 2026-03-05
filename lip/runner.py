@@ -273,13 +273,13 @@ def _redock_top_molecules(
     poses_dir = output_dir / "docked_poses"
     poses_dir.mkdir(parents=True, exist_ok=True)
 
-    docked_records = []
-    for i, mol in enumerate(top_mols):
-        smiles = mol["smiles"]
-        result = scorer.dock_smiles(smiles)
+    smiles_list = [mol["smiles"] for mol in top_mols]
+    dock_results = scorer.dock_batch(smiles_list)
 
+    docked_records = []
+    for i, (mol, result) in enumerate(zip(top_mols, dock_results)):
         if not result.success:
-            log.warning(f"Re-docking failed: {smiles[:50]}")
+            log.warning(f"Re-docking failed: {mol['smiles'][:50]}")
             continue
 
         rank = i + 1
@@ -293,13 +293,13 @@ def _redock_top_molecules(
 
         docked_records.append({
             "rank": rank,
-            "smiles": smiles,
+            "smiles": mol["smiles"],
             "docking_score": result.score,
             "optimization_score": mol.get("score", 0.0),
             "complex_pdb": filename,
         })
 
-        log.info(f"  Rank {rank}: {result.score:.2f} kcal/mol — {smiles[:50]}")
+        log.info(f"  Rank {rank}: {result.score:.2f} kcal/mol — {mol['smiles'][:50]}")
 
     if docked_records:
         save_results_csv(docked_records, poses_dir / "docking_summary.csv")
