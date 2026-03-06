@@ -228,29 +228,182 @@ def save_top_molecules(
     log.info(f"Top {len(top)} molecules saved: {filepath}")
 
 
+def _parse_int_field(text: str, default: int = 0) -> int:
+    try:
+        return int(text.strip())
+    except ValueError:
+        return default
+
+
+def _parse_float_field(text: str, default: float) -> float:
+    try:
+        return float(text.strip())
+    except ValueError:
+        return default
+
+
+def _load_protein_only_receptor(
+    receptor_pdb_path: str | Path,
+) -> tuple[list[str], set[str], int]:
+    """Load receptor PDB lines while dropping docked ligands and other HETATM records."""
+    receptor_pdb_path = Path(receptor_pdb_path)
+
+    receptor_lines: list[str] = []
+    chain_ids: set[str] = set()
+    max_serial = 0
+
+    with open(receptor_pdb_path) as f:
+        for raw_line in f:
+            line = raw_line.rstrip()
+            record = line[:6].strip()
+
+            if record in ("END", "ENDMDL"):
+                break
+            if record in ("MODEL", "HETATM", "ANISOU", "CONECT", "MASTER"):
+                continue
+
+            if record == "ATOM":
+                chain_id = line[21].strip()
+                if chain_id:
+                    chain_ids.add(chain_id)
+                max_serial = max(max_serial, _parse_int_field(line[6:11]))
+
+            receptor_lines.append(line)
+
+    return receptor_lines, chain_ids, max_serial
+
+
+def save_protein_only_receptor_pdb(
+    receptor_pdb_path: str | Path,
+    output_path: str | Path,
+) -> None:
+    """Save a receptor PDB with all HETATM records removed."""
+    receptor_lines, _, _ = _load_protein_only_receptor(receptor_pdb_path)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, "w") as f:
+        if receptor_lines:
+            f.write("\n".join(receptor_lines) + "\n")
+        f.write("END\n")
+
+
+def choose_ligand_chain_id(
+    receptor_pdb_path: str | Path,
+    preferred: str = "L",
+) -> str:
+    """Choose a ligand chain ID that does not collide with protein chains."""
+    _, chain_ids, _ = _load_protein_only_receptor(receptor_pdb_path)
+
+    candidates = [preferred] + list("LMNOPQRSTUVWXYZABCDEFGHIJK")
+    for candidate in candidates:
+        if candidate and candidate not in chain_ids:
+            return candidate
+    return preferred or "L"
+
+
+def _infer_element_from_pdbqt(line: str) -> str:
+    atom_type = ""
+    fields = line.split()
+    if fields:
+        atom_type = fields[-1]
+
+    atom_type_map = {
+        "A": "C",
+        "BR": "BR",
+        "C": "C",
+        "CA": "CA",
+        "CL": "CL",
+        "CU": "CU",
+        "F": "F",
+        "FE": "FE",
+        "HD": "H",
+        "HS": "H",
+        "I": "I",
+        "K": "K",
+        "MG": "MG",
+        "MN": "MN",
+        "N": "N",
+        "NA": "N",
+        "OA": "O",
+        "P": "P",
+        "S": "S",
+        "SA": "S",
+        "ZN": "ZN",
+    }
+
+    normalized = atom_type.strip().upper()
+    if normalized in atom_type_map:
+        return atom_type_map[normalized]
+
+    atom_name = "".join(ch for ch in line[12:16] if ch.isalpha()).upper()
+    if atom_name:
+        if len(atom_name) >= 2 and atom_name[:2] in {"BR", "CL", "FE", "MG", "MN", "ZN"}:
+            return atom_name[:2]
+        return atom_name[0]
+
+    return "C"
+
+
+def _pdbqt_atom_to_pdb_line(
+    line: str,
+    serial: int,
+    chain_id: str,
+    resseq: int = 1,
+    resname: str = "LIG",
+) -> str:
+    """Convert a PDBQT atom line into a PDB HETATM line with explicit chain ID."""
+    atom_name = (line[12:16] if len(line) >= 16 else "").ljust(4)[:4]
+    alt_loc = line[16:17] if len(line) >= 17 else " "
+    x = _parse_float_field(line[30:38], 0.0)
+    y = _parse_float_field(line[38:46], 0.0)
+    z = _parse_float_field(line[46:54], 0.0)
+    occupancy = _parse_float_field(line[54:60], 1.0)
+    temp_factor = _parse_float_field(line[60:66], 0.0)
+    element = _infer_element_from_pdbqt(line)
+
+    return (
+        f"HETATM{serial:5d} {atom_name}{alt_loc}{resname:>3} {chain_id[:1]}"
+        f"{resseq:4d}    {x:8.3f}{y:8.3f}{z:8.3f}"
+        f"{occupancy:6.2f}{temp_factor:6.2f}          {element:>2}"
+    )
+
+
 def save_complex_pdb(
     receptor_pdb_path: str,
     ligand_pdbqt: str,
     output_path: str | Path,
+    ligand_chain_id: str | None = None,
 ) -> None:
     """Combine receptor PDB and docked ligand PDBQT into a complex PDB file."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    receptor_lines = []
-    with open(receptor_pdb_path) as f:
-        for line in f:
-            if line.strip() in ("END", "ENDMDL"):
-                continue
-            receptor_lines.append(line.rstrip())
+    receptor_lines, _, max_serial = _load_protein_only_receptor(receptor_pdb_path)
+    if ligand_chain_id is None:
+        ligand_chain_id = choose_ligand_chain_id(receptor_pdb_path)
 
     ligand_lines = []
+    next_serial = max_serial + 1
     for line in ligand_pdbqt.splitlines():
         record = line[:6].strip()
         if record in ("ATOM", "HETATM"):
-            pdb_line = "HETATM" + line[6:17] + "LIG" + line[20:66].rstrip()
+            pdb_line = _pdbqt_atom_to_pdb_line(
+                line=line,
+                serial=next_serial,
+                chain_id=ligand_chain_id,
+            )
             ligand_lines.append(pdb_line)
+            next_serial += 1
 
-    all_lines = receptor_lines + ["TER"] + ligand_lines + ["TER", "END"]
+    all_lines = list(receptor_lines)
+    if ligand_lines and (not all_lines or all_lines[-1][:6].strip() != "TER"):
+        all_lines.append("TER")
+    all_lines.extend(ligand_lines)
+    if ligand_lines:
+        all_lines.append("TER")
+    all_lines.append("END")
+
     with open(output_path, "w") as f:
         f.write("\n".join(all_lines) + "\n")

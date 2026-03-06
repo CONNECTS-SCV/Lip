@@ -247,7 +247,13 @@ def _redock_top_molecules(
 ) -> None:
     """Re-dock top N molecules and save protein-ligand complex PDB files."""
     from lip.scoring.docking import create_docking_scorer
-    from lip.utils.io import collect_top_molecules, save_complex_pdb, save_results_csv
+    from lip.utils.io import (
+        choose_ligand_chain_id,
+        collect_top_molecules,
+        save_complex_pdb,
+        save_protein_only_receptor_pdb,
+        save_results_csv,
+    )
 
     top_mols = collect_top_molecules(rounds, top_n)
     if not top_mols:
@@ -258,10 +264,22 @@ def _redock_top_molecules(
 
     log.info(f"Re-docking top {len(top_mols)} molecules...")
 
+    poses_dir = output_dir / "docked_poses"
+    poses_dir.mkdir(parents=True, exist_ok=True)
+    protein_only_receptor = poses_dir / "receptor_protein_only.pdb"
+    save_protein_only_receptor_pdb(config.receptor_pdb, protein_only_receptor)
+    ligand_chain_id = choose_ligand_chain_id(protein_only_receptor)
+
+    log.info(
+        f"Re-docking with protein-only receptor: {protein_only_receptor} "
+        f"(ligand chain {ligand_chain_id})"
+    )
+
+    smiles_list = [mol["smiles"] for mol in top_mols]
     try:
         scorer = create_docking_scorer(
             method="unidock",
-            receptor_pdb=config.receptor_pdb,
+            receptor_pdb=str(protein_only_receptor),
             pocket_center=center,
             box_size=(box_sz, box_sz, box_sz),
             exhaustiveness=config.docking.exhaustiveness,
@@ -270,10 +288,6 @@ def _redock_top_molecules(
         log.warning(f"Failed to create docking scorer for re-docking: {e}")
         return
 
-    poses_dir = output_dir / "docked_poses"
-    poses_dir.mkdir(parents=True, exist_ok=True)
-
-    smiles_list = [mol["smiles"] for mol in top_mols]
     dock_results = scorer.dock_batch(smiles_list)
 
     docked_records = []
@@ -286,9 +300,10 @@ def _redock_top_molecules(
         filename = f"rank{rank:02d}_{result.score:.1f}.pdb"
 
         save_complex_pdb(
-            receptor_pdb_path=config.receptor_pdb,
+            receptor_pdb_path=protein_only_receptor,
             ligand_pdbqt=result.pose_pdbqt,
             output_path=poses_dir / filename,
+            ligand_chain_id=ligand_chain_id,
         )
 
         docked_records.append({
