@@ -461,7 +461,12 @@ def save_complex_pdb(
             ligand_lines.append(pdb_line)
             next_serial += 1
 
-    all_lines = list(receptor_lines)
+    all_lines = []
+    chain_marker = "APPLY THE FOLLOWING TO CHAINS:"
+    for line in receptor_lines:
+        if chain_marker in line and ligand_chain_id not in line.split(chain_marker)[1]:
+            line = line.rstrip() + f", {ligand_chain_id}"
+        all_lines.append(line)
     if ligand_lines and (not all_lines or all_lines[-1][:6].strip() != "TER"):
         all_lines.append("TER")
     all_lines.extend(ligand_lines)
