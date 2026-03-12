@@ -72,3 +72,21 @@ def extract_ligands(
 
     results.sort(key=lambda lig: lig.num_atoms, reverse=True)
     return results
+
+
+def find_ligand_by_id(
+    ligands: list[ExtractedLigand], ligand_id: str
+) -> ExtractedLigand | None:
+    """Find a ligand by 'chain:resnum' identifier (e.g., 'A:300')."""
+    parts = ligand_id.split(":")
+    if len(parts) != 2:
+        return None
+    chain, resnum_str = parts
+    try:
+        resnum = int(resnum_str)
+    except ValueError:
+        return None
+    return next(
+        (lig for lig in ligands if lig.chain == chain and lig.resnum == resnum),
+        None,
+    )

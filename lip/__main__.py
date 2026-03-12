@@ -205,6 +205,8 @@ def _add_common_args(parser: argparse.ArgumentParser):
                         help="PDB and ligand SDF are separate (requires --ligand-sdf)")
     parser.add_argument("--ligand-sdf", dest="ligand_sdf", type=str, default=None,
                         help="Ligand SDF file path (required when --no-docked)")
+    parser.add_argument("--ligand-id", dest="ligand_id", type=str, default=None,
+                        help="Target ligand as 'chain:resnum' (e.g., 'A:300')")
     parser.add_argument("--log-level", dest="log_level", type=str, default="info",
                         choices=["debug", "info", "warning", "error"])
 

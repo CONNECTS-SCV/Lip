@@ -177,7 +177,7 @@ def _run_pocket2mol(config: LipConfig) -> None:
 
 def _extract_pocket_from_pdb(config: LipConfig) -> None:
     """PDB 내 공결정 리간드에서 포켓 중심 추출."""
-    from lip.utils.pocket import extract_ligands
+    from lip.utils.pocket import extract_ligands, find_ligand_by_id
 
     ligands = extract_ligands(config.receptor_pdb)
     if not ligands:
@@ -185,7 +185,20 @@ def _extract_pocket_from_pdb(config: LipConfig) -> None:
             "is_docked=True이지만 PDB에서 리간드를 찾을 수 없습니다. "
             "PDB에 HETATM 리간드가 포함되어 있는지 확인하세요."
         )
-    best = ligands[0]  # sorted by num_atoms descending
+
+    if config.ligand_id:
+        best = find_ligand_by_id(ligands, config.ligand_id)
+        if best is None:
+            available = ", ".join(
+                f"{l.resname}:{l.chain}:{l.resnum}" for l in ligands
+            )
+            raise RuntimeError(
+                f"ligand_id '{config.ligand_id}'에 해당하는 리간드를 찾을 수 없습니다. "
+                f"사용 가능한 리간드: {available}"
+            )
+    else:
+        best = ligands[0]
+
     config.pocket_center = list(best.center)
     log.info(
         f"Pocket from co-crystal ligand {best.resname} "
