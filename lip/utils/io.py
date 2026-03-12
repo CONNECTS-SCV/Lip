@@ -311,26 +311,26 @@ def _infer_element_from_pdbqt(line: str) -> str:
 
     atom_type_map = {
         "A": "C",
-        "BR": "BR",
+        "BR": "Br",
         "C": "C",
-        "CA": "CA",
-        "CL": "CL",
-        "CU": "CU",
+        "CA": "Ca",
+        "CL": "Cl",
+        "CU": "Cu",
         "F": "F",
-        "FE": "FE",
+        "FE": "Fe",
         "HD": "H",
         "HS": "H",
         "I": "I",
         "K": "K",
-        "MG": "MG",
-        "MN": "MN",
+        "MG": "Mg",
+        "MN": "Mn",
         "N": "N",
         "NA": "N",
         "OA": "O",
         "P": "P",
         "S": "S",
         "SA": "S",
-        "ZN": "ZN",
+        "ZN": "Zn",
     }
 
     normalized = atom_type.strip().upper()
@@ -339,11 +339,75 @@ def _infer_element_from_pdbqt(line: str) -> str:
 
     atom_name = "".join(ch for ch in line[12:16] if ch.isalpha()).upper()
     if atom_name:
-        if len(atom_name) >= 2 and atom_name[:2] in {"BR", "CL", "FE", "MG", "MN", "ZN"}:
-            return atom_name[:2]
+        two = atom_name[:2]
+        if len(atom_name) >= 2 and two in {"BR", "CL", "FE", "MG", "MN", "ZN"}:
+            return two[0] + two[1].lower()
         return atom_name[0]
 
     return "C"
+
+
+def _generate_conect_records(
+    ligand_pdbqt: str,
+    serial_start: int,
+) -> list[str]:
+    """Generate PDB CONECT records from a PDBQT ligand via obabel."""
+    import os
+    import subprocess
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdbqt_path = os.path.join(tmpdir, "ligand.pdbqt")
+            pdb_path = os.path.join(tmpdir, "ligand.pdb")
+            with open(pdbqt_path, "w") as f:
+                f.write(ligand_pdbqt)
+
+            result = subprocess.run(
+                ["obabel", pdbqt_path, "-O", pdb_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                return []
+
+            with open(pdb_path) as f:
+                pdb_lines = f.readlines()
+
+            obabel_atom_count = sum(
+                1 for l in pdb_lines if l[:6].strip() in ("ATOM", "HETATM")
+            )
+            pdbqt_atom_count = sum(
+                1 for l in ligand_pdbqt.splitlines()
+                if l[:6].strip() in ("ATOM", "HETATM")
+            )
+            if obabel_atom_count != pdbqt_atom_count:
+                log.warning(
+                    f"Atom count mismatch (obabel={obabel_atom_count}, "
+                    f"pdbqt={pdbqt_atom_count}), skipping CONECT records"
+                )
+                return []
+
+            offset = serial_start - 1
+            conect_lines = []
+            for line in pdb_lines:
+                if not line.startswith("CONECT"):
+                    continue
+                serials = []
+                field = line[6:].rstrip()
+                for i in range(0, len(field), 5):
+                    chunk = field[i : i + 5].strip()
+                    if chunk.isdigit():
+                        serials.append(int(chunk) + offset)
+                if len(serials) >= 2:
+                    conect_lines.append(
+                        "CONECT" + "".join(f"{s:5d}" for s in serials)
+                    )
+
+            return conect_lines
+
+    except Exception as e:
+        log.warning(f"Failed to generate CONECT records: {e}")
+        return []
 
 
 def _pdbqt_atom_to_pdb_line(
@@ -403,6 +467,10 @@ def save_complex_pdb(
     all_lines.extend(ligand_lines)
     if ligand_lines:
         all_lines.append("TER")
+
+    conect_lines = _generate_conect_records(ligand_pdbqt, max_serial + 1)
+    all_lines.extend(conect_lines)
+
     all_lines.append("END")
 
     with open(output_path, "w") as f:
