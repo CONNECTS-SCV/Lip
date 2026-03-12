@@ -534,7 +534,7 @@ class UniDockScorer(BaseDockingScorer):
                     "--verbosity", "0",
                 ]
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=600,
+                    cmd, capture_output=True, text=True, timeout=10800,
                 )
                 if proc.returncode != 0:
                     log.error(f"Uni-Dock gpu_batch failed: {proc.stderr}")
