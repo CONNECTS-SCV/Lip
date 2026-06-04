@@ -191,19 +191,32 @@ def _smiles_to_sdfs(smiles_path: str, output_dir: str, max_n: int) -> list[str]:
 
 def _find_conda_python(env_name: str) -> str | None:
     """Find Python binary in a conda environment."""
-    home = Path.home()
-    candidates = [
-        home / "miniforge3" / "envs" / env_name,
-        home / "miniconda3" / "envs" / env_name,
-        home / "anaconda3" / "envs" / env_name,
-    ]
+    base_dirs: list[Path] = []
 
-    for base in candidates:
-        # Linux/Mac
+    # Derive conda root from active CONDA_PREFIX (works inside containers)
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+    if conda_prefix:
+        conda_root = Path(conda_prefix)
+        while conda_root.parent != conda_root:
+            if (conda_root / "envs").is_dir():
+                base_dirs.append(conda_root / "envs" / env_name)
+                break
+            conda_root = conda_root.parent
+
+    # Fallback: common home-relative paths
+    home = Path.home()
+    for dirname in ("miniforge3", "miniconda3", "anaconda3", "conda"):
+        base_dirs.append(home / dirname / "envs" / env_name)
+
+    # System-wide conda installs
+    for prefix in (Path("/opt"), Path("/usr/local")):
+        for dirname in ("miniforge3", "miniconda3", "anaconda3", "conda"):
+            base_dirs.append(prefix / dirname / "envs" / env_name)
+
+    for base in base_dirs:
         py = base / "bin" / "python"
         if py.exists():
             return str(py)
-        # Windows
         py = base / "python.exe"
         if py.exists():
             return str(py)
