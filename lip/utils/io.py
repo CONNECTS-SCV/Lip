@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -160,44 +161,80 @@ def save_progress_plot(
     all_means = [getattr(r, "all_avg_score", None) for r in results]
     top10_means = [getattr(r, "top10_avg_score", None) for r in results]
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(steps, bests, "o-", color="#2563eb", label="Best", linewidth=2, markersize=5)
-    ax.plot(
-        steps, means, "s-", color="#f97316",
-        label="Valid Mean", linewidth=2, markersize=5,
-    )
+    def _series_values(values: list[Any]) -> list[float | None]:
+        return [float(v) if v is not None else None for v in values]
+
+    def _plot_values(values: list[float | None]) -> list[float]:
+        return [v if v is not None else float("nan") for v in values]
+
+    all_means = _series_values(all_means)
+    top10_means = _series_values(top10_means)
+
+    fig, ax = plt.subplots(figsize=(9, 5.5))
     if any(v is not None for v in all_means):
         ax.plot(
             steps,
-            [v if v is not None else 0.0 for v in all_means],
+            _plot_values(all_means),
             "^-",
-            color="#64748b",
+            color="#94a3b8",
             label="All Mean",
-            linewidth=1.5,
+            linewidth=1.4,
             markersize=4,
-            alpha=0.8,
+            alpha=0.75,
+            zorder=1,
         )
+    ax.plot(
+        steps, means, "s-", color="#f97316",
+        label="Valid Mean", linewidth=2.2, markersize=5,
+        zorder=2,
+    )
     if any(v is not None for v in top10_means):
         ax.plot(
             steps,
-            [v if v is not None else 0.0 for v in top10_means],
-            "d-",
+            _plot_values(top10_means),
+            "D--",
             color="#16a34a",
             label="Top 10 Mean",
-            linewidth=1.5,
-            markersize=4,
-            alpha=0.85,
+            linewidth=2.0,
+            markersize=5,
+            alpha=0.95,
+            zorder=4,
         )
+    ax.plot(
+        steps, bests, "o-",
+        color="#2563eb",
+        label="Best",
+        linewidth=2.3,
+        markersize=5,
+        zorder=5,
+    )
 
     from matplotlib.ticker import MaxNLocator
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.set_xlabel("Step")
     ax.set_ylabel("Score")
     ax.set_title("Optimization Progress")
-    ax.legend()
+    ax.legend(loc="best", framealpha=0.85)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(left=1 - 0.3, right=max(steps) + 0.3)
-    ax.set_ylim(bottom=0.0, top=1.0)
+
+    y_values = [
+        float(v)
+        for series in (bests, means, all_means, top10_means)
+        for v in series
+        if v is not None and math.isfinite(float(v))
+    ]
+    if y_values:
+        y_min = min(y_values)
+        y_max = max(y_values)
+        if y_min >= 0.6:
+            span = max(y_max - y_min, 0.08)
+            pad = max(span * 0.18, 0.025)
+            ax.set_ylim(bottom=max(0.0, y_min - pad), top=min(1.0, y_max + pad))
+        else:
+            ax.set_ylim(bottom=0.0, top=1.0)
+    else:
+        ax.set_ylim(bottom=0.0, top=1.0)
 
     filepath = Path(output_dir) / "progress.png"
     filepath.parent.mkdir(parents=True, exist_ok=True)
