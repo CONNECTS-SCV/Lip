@@ -137,10 +137,10 @@ def save_progress_plot(
     results: list[Any],
     output_dir: str | Path,
 ) -> None:
-    """Save a best/mean score line chart per step as progress.png.
+    """Save score trend lines per step as progress.png.
 
     Args:
-        results: List of RoundResult (must have .best_score, .avg_score, .round_num).
+        results: List of RoundResult with best, mean, and optional diagnostic scores.
         output_dir: Directory to save progress.png.
     """
     if not results:
@@ -157,10 +157,37 @@ def save_progress_plot(
     steps = [r.round_num for r in results]
     bests = [r.best_score for r in results]
     means = [r.avg_score for r in results]
+    all_means = [getattr(r, "all_avg_score", None) for r in results]
+    top10_means = [getattr(r, "top10_avg_score", None) for r in results]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(steps, bests, "o-", color="#2563eb", label="Best", linewidth=2, markersize=5)
-    ax.plot(steps, means, "s-", color="#f97316", label="Mean", linewidth=2, markersize=5)
+    ax.plot(
+        steps, means, "s-", color="#f97316",
+        label="Valid Mean", linewidth=2, markersize=5,
+    )
+    if any(v is not None for v in all_means):
+        ax.plot(
+            steps,
+            [v if v is not None else 0.0 for v in all_means],
+            "^-",
+            color="#64748b",
+            label="All Mean",
+            linewidth=1.5,
+            markersize=4,
+            alpha=0.8,
+        )
+    if any(v is not None for v in top10_means):
+        ax.plot(
+            steps,
+            [v if v is not None else 0.0 for v in top10_means],
+            "d-",
+            color="#16a34a",
+            label="Top 10 Mean",
+            linewidth=1.5,
+            markersize=4,
+            alpha=0.85,
+        )
 
     from matplotlib.ticker import MaxNLocator
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))

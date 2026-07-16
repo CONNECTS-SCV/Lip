@@ -18,7 +18,14 @@ from lip.scoring.docking import BaseDockingScorer, VinaDockingScorer, create_doc
 from lip.utils.chem import (
     is_valid, canonicalize, check_lipinski, check_pains,
 )
-from lip.utils.io import save_round_results, save_json, load_json, save_progress_plot, save_top_molecules
+from lip.utils.io import (
+    save_round_results,
+    save_json,
+    load_json,
+    save_progress_plot,
+    save_results_csv,
+    save_top_molecules,
+)
 from lip.utils.math import normalize_score
 
 log = logging.getLogger(__name__)
@@ -38,6 +45,8 @@ class RoundResult:
     avg_score: float
     n_valid: int
     n_total: int
+    all_avg_score: float | None = None
+    top10_avg_score: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -150,97 +159,73 @@ class OptimizationLoop:
     # -----------------------------------------------------------------------
 
     def _run_managed_mode(self) -> list[RoundResult]:
-        """Run RL via REINVENT4: 1 stage per call, N calls with checkpoint chaining.
+        """Run one continuous REINVENT4 staged-learning call.
 
-        Each step is a separate REINVENT4 invocation to ensure:
-        - Per-step checkpoint saving
-        - Clean resource release between steps
+        Curieus steps map to REINVENT internal learning steps. Keeping the
+        managed run in one process preserves optimizer, diversity-filter, and
+        inception state so progress reflects actual policy learning.
         """
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         n_steps = self.config.optimization.n_steps
-
-        # Build scoring components
         components = self.component_builder.build_all(self.constraints)
         chkpt_dir = output_dir / "checkpoints"
         chkpt_dir.mkdir(parents=True, exist_ok=True)
 
-        log.info(f"Starting REINVENT4 RL ({n_steps} steps, 1 call per step)")
+        log.info(f"Starting continuous REINVENT4 RL ({n_steps} internal steps)")
 
-        all_results: list[RoundResult] = []
+        stage = StageConfig(
+            max_steps=n_steps,
+            min_steps=n_steps,
+            max_score=1.0,
+            scoring_components=components,
+            chkpt_file=str(chkpt_dir / f"agent_step{n_steps}.chkpt"),
+        )
 
-        for step in range(n_steps):
-            step_num = step + 1
-            log.info(f"Step {step_num}/{n_steps}")
+        result = self.generator.run_staged_learning(
+            stages=[stage],
+            output_dir=str(output_dir / "rl_output"),
+        )
 
-            stage = StageConfig(
-                max_steps=1,
-                min_steps=1,
-                max_score=1.0,
-                scoring_components=components,
-                chkpt_file=str(chkpt_dir / f"agent_step{step_num}.chkpt"),
+        if not result.get("success"):
+            raise RuntimeError(
+                "REINVENT4 failed during managed learning: "
+                f"{result.get('error', 'unknown')}"
             )
 
-            step_output = str(output_dir / "rl_output" / f"step_{step_num}")
-            result = self.generator.run_staged_learning(
-                stages=[stage],
-                output_dir=step_output,
-            )
+        scores_by_step = result.get("scores_by_step", {})
+        molecules_by_stage = result.get("molecules_by_stage", {})
+        all_results = self._build_managed_round_results(
+            scores_by_step.get(1, []),
+            molecules_by_stage.get(1, []),
+        )
 
-            if not result.get("success"):
-                raise RuntimeError(
-                    f"REINVENT4 failed at step {step_num}: "
-                    f"{result.get('error', 'unknown')}"
-                )
-
-            # Parse results (single stage → key=1)
-            scores_by_step = result.get("scores_by_step", {})
-            molecules_by_stage = result.get("molecules_by_stage", {})
-
-            steps_data = scores_by_step.get(1, [])
-            stage_mols = molecules_by_stage.get(1, [])
-
-            step_mols = []
-            for mol in stage_mols:
-                rec = {
-                    "smiles": mol["smiles"],
-                    "score": mol["total_score"],
+        metrics_rows = []
+        for rr in all_results:
+            if rr.molecules:
+                save_round_results(rr.round_num, rr.molecules, str(output_dir))
+            metrics_rows.append(
+                {
+                    "step": rr.round_num,
+                    "best_score": rr.best_score,
+                    "valid_mean_score": rr.avg_score,
+                    "all_mean_score": rr.all_avg_score,
+                    "top10_mean_score": rr.top10_avg_score,
+                    "n_valid": rr.n_valid,
+                    "n_total": rr.n_total,
+                    "valid_ratio": rr.n_valid / rr.n_total if rr.n_total else 0.0,
                 }
-                scores = mol.get("scores", {})
-                raw_values = mol.get("raw_values", {})
-                for k in scores:
-                    rec[k] = scores[k]
-                    if k in raw_values:
-                        rec[f"{k}_raw"] = raw_values[k]
-                for k in raw_values:
-                    if k not in scores:
-                        rec[f"{k}_raw"] = raw_values[k]
-                step_mols.append(rec)
-
-            step_data = steps_data[0] if steps_data else {
-                "max_score": 0, "mean_score": 0, "n": 0,
-            }
-
-            rr = RoundResult(
-                round_num=step_num,
-                molecules=step_mols,
-                best_score=step_data["max_score"],
-                avg_score=step_data["mean_score"],
-                n_valid=len(step_mols),
-                n_total=step_data.get("n", self.config.generator.batch_size),
             )
-            all_results.append(rr)
-
-            if step_mols:
-                save_round_results(step_num, step_mols, str(output_dir))
-
             log.info(
-                f"Step {step_num} done: best={step_data['max_score']:.3f}, "
-                f"avg={step_data['mean_score']:.3f}, n={len(step_mols)}"
+                f"Step {rr.round_num} done: best={rr.best_score:.3f}, "
+                f"valid_avg={rr.avg_score:.3f}, all_avg={rr.all_avg_score or 0.0:.3f}, "
+                f"valid={rr.n_valid}/{rr.n_total}"
             )
 
-        # Final state + outputs
+        if metrics_rows:
+            save_results_csv(metrics_rows, output_dir / "optimization_metrics.csv")
+
         self.state.best_score = max(
             (r.best_score for r in all_results), default=0.0,
         )
@@ -251,6 +236,74 @@ class OptimizationLoop:
         save_top_molecules(all_results, output_dir)
         return all_results
 
+    def _build_managed_round_results(
+        self,
+        steps_data: list[dict[str, Any]],
+        stage_mols: list[dict[str, Any]],
+    ) -> list[RoundResult]:
+        """Build per-step results from one REINVENT staged-learning CSV parse."""
+        mols_by_step: dict[int, list[dict[str, Any]]] = {}
+        for mol in stage_mols:
+            step = int(mol.get("step", 0))
+            rec = {
+                "smiles": mol["smiles"],
+                "score": mol["total_score"],
+                "reinvent_step": step,
+            }
+            scores = mol.get("scores", {})
+            raw_values = mol.get("raw_values", {})
+            for k in scores:
+                rec[k] = scores[k]
+                if k in raw_values:
+                    rec[f"{k}_raw"] = raw_values[k]
+            for k in raw_values:
+                if k not in scores:
+                    rec[f"{k}_raw"] = raw_values[k]
+            mols_by_step.setdefault(step, []).append(rec)
+
+        all_results: list[RoundResult] = []
+        for round_num, step_data in enumerate(steps_data, start=1):
+            reinvent_step = int(step_data.get("step", round_num))
+            step_mols = mols_by_step.get(reinvent_step, [])
+            valid_avg = step_data.get("valid_mean_score")
+            if valid_avg is None:
+                valid_avg = (
+                    sum(m["score"] for m in step_mols) / len(step_mols)
+                    if step_mols else 0.0
+                )
+            rr = RoundResult(
+                round_num=round_num,
+                molecules=step_mols,
+                best_score=step_data.get("max_score", 0.0),
+                avg_score=valid_avg,
+                n_valid=step_data.get("n_valid", len(step_mols)),
+                n_total=step_data.get("n", self.config.generator.batch_size),
+                all_avg_score=step_data.get("mean_score", valid_avg),
+                top10_avg_score=step_data.get("top10_mean_score"),
+            )
+            all_results.append(rr)
+
+            if self._on_round_complete:
+                self._on_round_complete(rr)
+
+        if not all_results and stage_mols:
+            step_mols = [m for mols in mols_by_step.values() for m in mols]
+            best = max((m["score"] for m in step_mols), default=0.0)
+            avg = sum(m["score"] for m in step_mols) / len(step_mols)
+            all_results.append(
+                RoundResult(
+                    round_num=1,
+                    molecules=step_mols,
+                    best_score=best,
+                    avg_score=avg,
+                    n_valid=len(step_mols),
+                    n_total=len(step_mols),
+                    all_avg_score=avg,
+                    top10_avg_score=avg,
+                )
+            )
+
+        return all_results
 
     # -----------------------------------------------------------------------
     # Manual mode: generate -> filter -> score -> select

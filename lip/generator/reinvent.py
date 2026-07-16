@@ -406,6 +406,8 @@ class ReinventWrapper(BaseGenerator):
         }
 
         steps: dict[int, list[float]] = {}
+        valid_steps: dict[int, list[float]] = {}
+        unique_smiles_by_step: dict[int, set[str]] = {}
         molecules: list[dict] = []
 
         with open(filepath) as f:
@@ -420,6 +422,8 @@ class ReinventWrapper(BaseGenerator):
                     steps.setdefault(step, []).append(score)
 
                     if smiles_state == "1" and smiles and score > 0:
+                        valid_steps.setdefault(step, []).append(score)
+                        unique_smiles_by_step.setdefault(step, set()).add(smiles)
                         component_scores = {}
                         raw_values = {}
                         for key, val in row.items():
@@ -446,10 +450,26 @@ class ReinventWrapper(BaseGenerator):
                 except (ValueError, KeyError):
                     continue
 
-        step_summaries = [
-            {"step": s, "mean_score": sum(sc) / len(sc), "max_score": max(sc), "n": len(sc)}
-            for s, sc in sorted(steps.items())
-        ]
+        step_summaries = []
+        for s, sc in sorted(steps.items()):
+            valid_scores = valid_steps.get(s, [])
+            top_scores = sorted(valid_scores, reverse=True)[:10]
+            step_summaries.append(
+                {
+                    "step": s,
+                    "mean_score": sum(sc) / len(sc),
+                    "max_score": max(sc),
+                    "n": len(sc),
+                    "valid_mean_score": (
+                        sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
+                    ),
+                    "top10_mean_score": (
+                        sum(top_scores) / len(top_scores) if top_scores else 0.0
+                    ),
+                    "n_valid": len(valid_scores),
+                    "n_unique": len(unique_smiles_by_step.get(s, set())),
+                }
+            )
         return {"steps": step_summaries, "molecules": molecules}
 
     def stop(self) -> None:
