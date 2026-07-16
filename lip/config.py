@@ -42,7 +42,7 @@ class OptimizationConfig:
     mode: str = "managed"  # "managed" | "manual"
     n_steps: int = 10
     batch_size: int = 100
-    reinvent_timeout: int = 14400
+    reinvent_timeout: int = 43200
     max_score: float = 0.85
     early_stop_patience: int = 5
     inception: InceptionConfig = field(default_factory=InceptionConfig)

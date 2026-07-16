@@ -185,7 +185,7 @@ class ReinventWrapper(BaseGenerator):
         self.agent_model = config.get("agent_model", "")
         self.device = config.get("device", "cpu")
         self.batch_size = config.get("batch_size", 50)
-        self.timeout = int(config.get("timeout", 14400))
+        self.timeout = int(config.get("timeout", 43200))
         self.sigma = config.get("sigma", 128)
         self.learning_rate = config.get("learning_rate", 0.0001)
         self.diversity_filter = config.get("diversity_filter", "IdenticalMurckoScaffold")
