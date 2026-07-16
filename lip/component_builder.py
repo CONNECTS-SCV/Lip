@@ -71,7 +71,7 @@ def _qed_to_component(params: dict, weight: float) -> ScoringComponent | None:
 
 @_register_component("sa")
 def _sa_to_component(params: dict, weight: float) -> ScoringComponent | None:
-    return sa_component(weight)
+    return sa_component(weight, threshold=params.get("threshold", 4.0))
 
 
 @_register_component("similarity")

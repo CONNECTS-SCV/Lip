@@ -76,8 +76,19 @@ def qed_component(weight: float = 1.0) -> ScoringComponent:
     return ScoringComponent("QED", "qed", weight)
 
 
-def sa_component(weight: float = 1.0) -> ScoringComponent:
-    return ScoringComponent("SAScore", "sa", weight)
+def sa_component(weight: float = 1.0, threshold: float = 4.0) -> ScoringComponent:
+    """Create SA score component.
+
+    REINVENT SAScore is a raw synthetic accessibility score where lower is
+    better. Apply a reverse sigmoid so difficult molecules do not get rewarded
+    with values above 1.
+    """
+    return ScoringComponent(
+        "SAScore",
+        "sa",
+        weight,
+        _reverse_sigmoid(high=threshold, low=1.0, k=0.5),
+    )
 
 
 def tpsa_component(low: float, high: float, weight: float = 1.0) -> ScoringComponent:
