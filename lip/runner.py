@@ -189,27 +189,48 @@ def _run_pocket2mol(config: LipConfig) -> None:
 
 def _extract_pocket_from_pdb(config: LipConfig) -> None:
     """PDB 내 공결정 리간드에서 포켓 중심 추출."""
-    from lip.utils.pocket import extract_ligands, find_ligand_by_id
+    from lip.utils.pocket import (
+        extract_declared_residues,
+        extract_ligands,
+        find_ligand_by_id,
+        find_residue_by_id,
+    )
 
     ligands = extract_ligands(config.receptor_pdb)
-    if not ligands:
-        raise RuntimeError(
-            "is_docked=True이지만 PDB에서 리간드를 찾을 수 없습니다. "
-            "PDB에 HETATM 리간드가 포함되어 있는지 확인하세요."
-        )
-
+    best = None
     if config.ligand_id:
         best = find_ligand_by_id(ligands, config.ligand_id)
         if best is None:
+            best = find_residue_by_id(config.receptor_pdb, config.ligand_id)
+        if best is None:
             available = ", ".join(
                 f"{l.resname}:{l.chain}:{l.resnum}" for l in ligands
-            )
+            ) or "없음"
             raise RuntimeError(
-                f"ligand_id '{config.ligand_id}'에 해당하는 리간드를 찾을 수 없습니다. "
+                f"ligand_id '{config.ligand_id}'에 해당하는 ligand/residue를 찾을 수 없습니다. "
                 f"사용 가능한 리간드: {available}"
             )
     else:
-        best = ligands[0]
+        if not ligands:
+            declared = extract_declared_residues(config.receptor_pdb)
+            if len(declared) == 1:
+                best = declared[0]
+            else:
+                available = ", ".join(
+                    f"{l.resname}:{l.chain}:{l.resnum}" for l in declared
+                ) or "없음"
+                raise RuntimeError(
+                    "is_docked=True이지만 PDB에서 소분자 HETATM 리간드를 찾을 수 없습니다. "
+                    "리간드가 포함된 complex PDB를 사용하거나 ligand_id 또는 pocket_center를 지정하세요. "
+                    f"HET/MODRES 후보: {available}"
+                )
+        else:
+            best = ligands[0]
+
+    if best is None:
+        raise RuntimeError(
+            "PDB에서 pocket anchor를 결정하지 못했습니다. ligand_id 또는 pocket_center를 지정하세요."
+        )
 
     config.pocket_center = list(best.center)
     log.info(
