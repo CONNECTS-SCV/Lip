@@ -87,6 +87,45 @@ def save_results_sdf(
     writer.close()
 
 
+def save_top_molecules_sdf(
+    molecules: list[dict[str, Any]],
+    filepath: str | Path,
+) -> None:
+    """Save top molecule records as 3D ligand conformers in one SDF file."""
+    from lip.utils.conformer import generate_conformer
+    from rdkit import Chem
+
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    writer = Chem.SDWriter(str(filepath))
+    n_written = 0
+    for rank, record in enumerate(molecules, start=1):
+        smiles = (record.get("smiles") or "").strip()
+        if not smiles:
+            continue
+
+        mol = generate_conformer(smiles, n_conformers=1)
+        if mol is None:
+            log.warning(f"Failed to generate 3D conformer for top molecule: {smiles}")
+            continue
+
+        mol.SetProp("rank", str(rank))
+        for key, value in record.items():
+            if value is None:
+                continue
+            mol.SetProp(str(key), str(value))
+        mol.SetProp("SMILES", smiles)
+        writer.write(mol, confId=0)
+        n_written += 1
+
+    writer.close()
+    if n_written:
+        log.info(f"Top molecule 3D SDF saved: {filepath} ({n_written} molecules)")
+    else:
+        log.warning(f"No top molecule conformers could be written to {filepath}")
+
+
 def load_mols_from_sdf(filepath: str | Path) -> list:
     """Load RDKit Mol objects from an SDF file."""
     from rdkit import Chem
@@ -283,13 +322,19 @@ def save_top_molecules(
     output_dir: str | Path,
     top_n: int = 20,
 ) -> None:
-    """Save top N molecules across all rounds to top_molecules.csv."""
+    """Save top N molecules across all rounds to CSV and 3D SDF."""
     top = collect_top_molecules(results, top_n)
     if not top:
         return
-    filepath = Path(output_dir) / "top_molecules.csv"
-    save_results_csv(top, filepath)
-    log.info(f"Top {len(top)} molecules saved: {filepath}")
+    output_dir = Path(output_dir)
+    csv_path = output_dir / "top_molecules.csv"
+    sdf_path = output_dir / "top_molecules.sdf"
+    save_results_csv(top, csv_path)
+    try:
+        save_top_molecules_sdf(top, sdf_path)
+    except Exception as e:
+        log.warning(f"Failed to save top molecule SDF: {e}")
+    log.info(f"Top {len(top)} molecules saved: {csv_path}")
 
 
 def _parse_int_field(text: str, default: int = 0) -> int:

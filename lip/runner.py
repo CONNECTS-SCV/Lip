@@ -100,6 +100,9 @@ def run(config: LipConfig, resume_dir: str | None = None) -> RunResult:
     log.info(f"Starting optimization (mode={config.optimization.mode})")
     rounds = loop.run()
 
+    # Pocket2Mol outputs are internal shape-reference artifacts, not final ligands.
+    _cleanup_internal_artifacts(output_dir)
+
     # Step 3: Optionally re-dock top molecules and save complex PDBs.
     # This is post-processing only; it does not affect REINVENT learning scores.
     if config.final_docking and rounds and config.receptor_pdb:
@@ -126,6 +129,14 @@ def _find_shape_constraint_without_reference(config: LipConfig):
             if not has_ref:
                 return cc
     return None
+
+
+def _cleanup_internal_artifacts(output_dir: Path) -> None:
+    """Remove intermediate artifacts that should not be packaged as final results."""
+    pocket2mol_dir = output_dir / "pocket2mol"
+    if pocket2mol_dir.exists():
+        shutil.rmtree(pocket2mol_dir, ignore_errors=True)
+        log.info(f"Removed internal Pocket2Mol artifacts: {pocket2mol_dir}")
 
 
 def _run_pocket2mol(config: LipConfig) -> None:
