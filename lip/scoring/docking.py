@@ -283,8 +283,9 @@ def vina_external_process_main():
         log.info(f"Receptor: {args.receptor}, Method: {method}")
         log.info(f"Center: {center}, Box: {box_size}, Exhaustiveness: {args.exhaustiveness}")
 
-        # Read SMILES from stdin (plain text, one per line)
-        smiles_list = [line.strip() for line in sys.stdin if line.strip()]
+        from lip.scoring.external_io import parse_external_smiles
+
+        smiles_list = parse_external_smiles(sys.stdin.read())
 
         if not smiles_list:
             sys.stdout = _real_stdout

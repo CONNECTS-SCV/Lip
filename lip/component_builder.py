@@ -82,6 +82,8 @@ def _similarity_to_component(params: dict, weight: float) -> ScoringComponent | 
 
 @_register_component("shape")
 def _shape_to_component(params: dict, weight: float) -> ScoringComponent | None:
+    if not (params.get("reference_smiles") or params.get("reference_sdf")):
+        return None
     return shape_similarity_component(
         reference_smiles=params.get("reference_smiles", ""),
         reference_sdf=params.get("reference_sdf", ""),

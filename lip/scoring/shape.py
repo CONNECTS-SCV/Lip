@@ -17,6 +17,7 @@ from typing import Any
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
+from lip.scoring.external_io import parse_external_smiles
 from lip.utils.conformer import generate_conformer
 
 log = logging.getLogger(__name__)
@@ -182,8 +183,7 @@ def main():
         print(json.dumps({"version": 1, "payload": {"shape_similarity": []}}))
         return
 
-    # Read SMILES from stdin (plain text, one per line)
-    smiles_list = [line.strip() for line in sys.stdin if line.strip()]
+    smiles_list = parse_external_smiles(sys.stdin.read())
 
     if not smiles_list:
         sys.stdout = _real_stdout
