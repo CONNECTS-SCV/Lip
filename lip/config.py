@@ -217,7 +217,6 @@ class LipConfig:
             "mode": ("optimization", "mode"),
             "n_steps": ("optimization", "n_steps"),
             "opt_batch_size": ("optimization", "batch_size"),
-            "reinvent_timeout": ("optimization", "reinvent_timeout"),
             "max_score": ("optimization", "max_score"),
             "early_stop_patience": ("optimization", "early_stop_patience"),
             "inception_memory_size": ("optimization.inception", "memory_size"),

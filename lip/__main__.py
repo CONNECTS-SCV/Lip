@@ -226,8 +226,6 @@ def _add_optimization_args(parser: argparse.ArgumentParser):
     g.add_argument("--mode", type=str, default=None, choices=["managed", "manual"])
     g.add_argument("--n-steps", dest="n_steps", type=int, default=None)
     g.add_argument("--opt-batch-size", dest="opt_batch_size", type=int, default=None)
-    g.add_argument("--reinvent-timeout", dest="reinvent_timeout", type=int, default=None,
-                   help="Timeout in seconds for each REINVENT4 managed-mode step")
     g.add_argument("--max-score", dest="max_score", type=float, default=None)
     g.add_argument("--early-stop-patience", dest="early_stop_patience", type=int, default=None)
     g.add_argument("--inception-memory-size", dest="inception_memory_size", type=int, default=None)

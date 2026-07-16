@@ -10,7 +10,6 @@ optimization:
   mode: "managed"
   n_steps: 10
   batch_size: 100
-  reinvent_timeout: 14400
   max_score: 0.85
   early_stop_patience: 5
   inception:
