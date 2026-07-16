@@ -207,6 +207,10 @@ def _add_common_args(parser: argparse.ArgumentParser):
                         help="Ligand SDF file path (required when --no-docked)")
     parser.add_argument("--ligand-id", dest="ligand_id", type=str, default=None,
                         help="Target ligand as 'chain:resnum' (e.g., 'A:300')")
+    parser.add_argument("--final-docking", dest="final_docking", action="store_true", default=None,
+                        help="Re-dock final top molecules and save protein-ligand complex PDBs")
+    parser.add_argument("--no-final-docking", dest="final_docking", action="store_false",
+                        help="Skip final top-molecule re-docking and complex PDB generation")
     parser.add_argument("--log-level", dest="log_level", type=str, default="info",
                         choices=["debug", "info", "warning", "error"])
 

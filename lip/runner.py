@@ -100,8 +100,9 @@ def run(config: LipConfig, resume_dir: str | None = None) -> RunResult:
     log.info(f"Starting optimization (mode={config.optimization.mode})")
     rounds = loop.run()
 
-    # Step 3: Re-dock top molecules and save complex PDBs
-    if rounds and config.receptor_pdb:
+    # Step 3: Optionally re-dock top molecules and save complex PDBs.
+    # This is post-processing only; it does not affect REINVENT learning scores.
+    if config.final_docking and rounds and config.receptor_pdb:
         _redock_top_molecules(config, rounds, output_dir)
 
     # Step 4: Post-optimization synthesis analysis
@@ -289,9 +290,14 @@ def _redock_top_molecules(
     )
 
     smiles_list = [mol["smiles"] for mol in top_mols]
+    method = config.docking.method
+    if method == "auto":
+        from lip.scoring.docking import _unidock_available
+        method = "unidock" if _unidock_available() else "vina"
+
     try:
         scorer = create_docking_scorer(
-            method="unidock",
+            method=method,
             receptor_pdb=str(protein_only_receptor),
             pocket_center=center,
             box_size=(box_sz, box_sz, box_sz),

@@ -132,6 +132,7 @@ class LipConfig:
     is_docked: bool = True              # True: PDB에 리간드 포함, False: PDB+SDF 별도
     ligand_sdf: str = ""                # is_docked=False일 때 리간드 SDF 경로
     ligand_id: str = ""                  # 타겟 리간드 지정 "chain:resnum" (e.g. "A:300")
+    final_docking: bool = False          # True: 최종 top molecule만 재도킹해 complex PDB 저장
     output_dir: str = "results/"
     scoring_method: str = "weighted_sum"  # "weighted_sum" | "pareto"
 
@@ -196,7 +197,7 @@ class LipConfig:
             cfg.synthesis = _merge_dataclass(SynthesisConfig, data["synthesis"])
 
         # Top-level scalars
-        for key in ("receptor_pdb", "pocket_center", "is_docked", "ligand_sdf", "ligand_id", "output_dir", "scoring_method"):
+        for key in ("receptor_pdb", "pocket_center", "is_docked", "ligand_sdf", "ligand_id", "final_docking", "output_dir", "scoring_method"):
             if key in data:
                 setattr(cfg, key, data[key])
 
@@ -259,7 +260,7 @@ class LipConfig:
             setattr(obj, attr, value)
 
         # Top-level scalars
-        for key in ("receptor_pdb", "pocket_center", "is_docked", "ligand_sdf", "ligand_id", "output_dir", "scoring_method"):
+        for key in ("receptor_pdb", "pocket_center", "is_docked", "ligand_sdf", "ligand_id", "final_docking", "output_dir", "scoring_method"):
             value = cli_args.get(key)
             if value is not None:
                 setattr(self, key, value)
