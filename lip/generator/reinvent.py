@@ -185,6 +185,7 @@ class ReinventWrapper(BaseGenerator):
         self.agent_model = config.get("agent_model", "")
         self.device = config.get("device", "cpu")
         self.batch_size = config.get("batch_size", 50)
+        self.timeout = int(config.get("timeout", 14400))
         self.sigma = config.get("sigma", 128)
         self.learning_rate = config.get("learning_rate", 0.0001)
         self.diversity_filter = config.get("diversity_filter", "IdenticalMurckoScaffold")
@@ -296,7 +297,7 @@ class ReinventWrapper(BaseGenerator):
 
         log.info(f"Starting REINVENT4: {' '.join(cmd)}")
 
-        timeout = 1800  # 30 minutes per chunk
+        timeout = self.timeout
 
         result = self._run_reinvent(cmd, output_dir, timeout)
 
@@ -374,6 +375,12 @@ class ReinventWrapper(BaseGenerator):
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            message = (
+                f"REINVENT4 timed out after {timeout} seconds "
+                "and was terminated by Lip wrapper."
+            )
+            log.error(message)
+            stderr_lines.append(message)
             self.stop()
             proc.wait()
         finally:

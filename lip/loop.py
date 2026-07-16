@@ -95,6 +95,7 @@ class OptimizationLoop:
             "agent_model": config.generator.agent_model,
             "device": config.generator.device,
             "batch_size": config.generator.batch_size,
+            "timeout": config.optimization.reinvent_timeout,
             "sigma": config.generator.sigma,
             "learning_rate": config.generator.learning_rate,
             "diversity_filter": config.generator.diversity_filter,
