@@ -173,18 +173,24 @@ class OptimizationLoop:
         chkpt_dir = output_dir / "checkpoints"
         chkpt_dir.mkdir(parents=True, exist_ok=True)
 
-        log.info(f"Starting continuous REINVENT4 RL ({n_steps} internal steps)")
-
-        stage = StageConfig(
-            max_steps=n_steps,
-            min_steps=n_steps,
-            max_score=1.0,
-            scoring_components=components,
-            chkpt_file=str(chkpt_dir / f"agent_step{n_steps}.chkpt"),
+        log.info(
+            f"Starting continuous REINVENT4 RL "
+            f"({n_steps} staged checkpoints, 1 internal step each)"
         )
 
+        stages = [
+            StageConfig(
+                max_steps=1,
+                min_steps=1,
+                max_score=1.0,
+                scoring_components=components,
+                chkpt_file=str(chkpt_dir / f"agent_step{step}.chkpt"),
+            )
+            for step in range(1, n_steps + 1)
+        ]
+
         result = self.generator.run_staged_learning(
-            stages=[stage],
+            stages=stages,
             output_dir=str(output_dir / "rl_output"),
         )
 
@@ -196,10 +202,17 @@ class OptimizationLoop:
 
         scores_by_step = result.get("scores_by_step", {})
         molecules_by_stage = result.get("molecules_by_stage", {})
-        all_results = self._build_managed_round_results(
-            scores_by_step.get(1, []),
-            molecules_by_stage.get(1, []),
-        )
+        all_results: list[RoundResult] = []
+        stage_keys = sorted(set(scores_by_step) | set(molecules_by_stage))
+        for stage_idx in stage_keys:
+            all_results.extend(
+                self._build_managed_round_results(
+                    scores_by_step.get(stage_idx, []),
+                    molecules_by_stage.get(stage_idx, []),
+                    round_start=stage_idx,
+                    reinvent_stage=stage_idx,
+                )
+            )
 
         metrics_rows = []
         for rr in all_results:
@@ -240,6 +253,8 @@ class OptimizationLoop:
         self,
         steps_data: list[dict[str, Any]],
         stage_mols: list[dict[str, Any]],
+        round_start: int = 1,
+        reinvent_stage: int | None = None,
     ) -> list[RoundResult]:
         """Build per-step results from one REINVENT staged-learning CSV parse."""
         mols_by_step: dict[int, list[dict[str, Any]]] = {}
@@ -250,6 +265,8 @@ class OptimizationLoop:
                 "score": mol["total_score"],
                 "reinvent_step": step,
             }
+            if reinvent_stage is not None:
+                rec["reinvent_stage"] = reinvent_stage
             scores = mol.get("scores", {})
             raw_values = mol.get("raw_values", {})
             for k in scores:
@@ -262,8 +279,9 @@ class OptimizationLoop:
             mols_by_step.setdefault(step, []).append(rec)
 
         all_results: list[RoundResult] = []
-        for round_num, step_data in enumerate(steps_data, start=1):
-            reinvent_step = int(step_data.get("step", round_num))
+        for offset, step_data in enumerate(steps_data):
+            round_num = round_start + offset
+            reinvent_step = int(step_data.get("step", offset + 1))
             step_mols = mols_by_step.get(reinvent_step, [])
             valid_avg = step_data.get("valid_mean_score")
             if valid_avg is None:
@@ -292,7 +310,7 @@ class OptimizationLoop:
             avg = sum(m["score"] for m in step_mols) / len(step_mols)
             all_results.append(
                 RoundResult(
-                    round_num=1,
+                    round_num=round_start,
                     molecules=step_mols,
                     best_score=best,
                     avg_score=avg,
