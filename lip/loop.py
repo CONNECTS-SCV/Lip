@@ -159,11 +159,13 @@ class OptimizationLoop:
     # -----------------------------------------------------------------------
 
     def _run_managed_mode(self) -> list[RoundResult]:
-        """Run one continuous REINVENT4 staged-learning call.
+        """Run managed REINVENT4 learning with one real checkpoint per step.
 
-        Curieus steps map to REINVENT internal learning steps. Keeping the
-        managed run in one process preserves optimizer, diversity-filter, and
-        inception state so progress reflects actual policy learning.
+        REINVENT4 does not reliably emit every stage checkpoint when Lip maps
+        product steps to cumulative stage cutoffs in one TOML. Run each Curieus
+        step as a one-step REINVENT call and feed the saved agent checkpoint
+        into the next step. This makes ``agent_stepN.chkpt`` real learned agent
+        weights, not copied placeholders.
         """
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -173,45 +175,59 @@ class OptimizationLoop:
         chkpt_dir = output_dir / "checkpoints"
         chkpt_dir.mkdir(parents=True, exist_ok=True)
 
+        all_results: list[RoundResult] = []
         log.info(
-            f"Starting continuous REINVENT4 RL "
-            f"({n_steps} staged checkpoints, 1 internal step each)"
+            f"Starting checkpointed REINVENT4 RL ({n_steps} one-step chunks)"
         )
 
-        stages = [
-            StageConfig(
+        for step in range(1, n_steps + 1):
+            step_chkpt = chkpt_dir / f"agent_step{step}.chkpt"
+            step_output_dir = output_dir / "rl_output" / f"step_{step:03d}"
+            stage = StageConfig(
                 max_steps=1,
                 min_steps=1,
                 max_score=1.0,
                 scoring_components=components,
-                chkpt_file=str(chkpt_dir / f"agent_step{step}.chkpt"),
-            )
-            for step in range(1, n_steps + 1)
-        ]
-
-        result = self.generator.run_staged_learning(
-            stages=stages,
-            output_dir=str(output_dir / "rl_output"),
-        )
-
-        if not result.get("success"):
-            raise RuntimeError(
-                "REINVENT4 failed during managed learning: "
-                f"{result.get('error', 'unknown')}"
+                chkpt_file=str(step_chkpt),
             )
 
-        scores_by_step = result.get("scores_by_step", {})
-        molecules_by_stage = result.get("molecules_by_stage", {})
-        all_results: list[RoundResult] = []
-        stage_keys = sorted(set(scores_by_step) | set(molecules_by_stage))
-        for stage_idx in stage_keys:
-            all_results.extend(
-                self._build_managed_round_results(
-                    scores_by_step.get(stage_idx, []),
-                    molecules_by_stage.get(stage_idx, []),
-                    round_start=stage_idx,
-                    reinvent_stage=stage_idx,
+            result = self.generator.run_staged_learning(
+                stages=[stage],
+                output_dir=str(step_output_dir),
+            )
+
+            if not result.get("success"):
+                raise RuntimeError(
+                    f"REINVENT4 failed during managed learning step {step}: "
+                    f"{result.get('error', 'unknown')}"
                 )
+            if not step_chkpt.exists():
+                raise RuntimeError(
+                    "REINVENT4 did not create the expected Lip checkpoint: "
+                    f"{step_chkpt}"
+                )
+
+            step_results = self._build_managed_round_results(
+                result.get("scores_by_step", {}).get(1, []),
+                result.get("molecules_by_stage", {}).get(1, []),
+                round_start=step,
+                reinvent_stage=step,
+            )
+            if not step_results:
+                raise RuntimeError(
+                    "REINVENT4 managed learning produced no metrics for "
+                    f"step {step}; refusing to write a misleading progress plot."
+                )
+            all_results.extend(step_results[:1])
+
+        if len(all_results) < n_steps:
+            csv_files = sorted((output_dir / "rl_output").rglob("staged_learning*.csv"))
+            checkpoint_files = sorted(chkpt_dir.glob("agent_step*.chkpt"))
+            raise RuntimeError(
+                "REINVENT4 managed learning produced fewer step metrics than expected: "
+                f"expected {n_steps}, parsed {len(all_results)}. "
+                f"CSV files={len(csv_files)}, checkpoints={len(checkpoint_files)}. "
+                "Refusing to write a misleading one-point progress plot."
             )
 
         metrics_rows = []
