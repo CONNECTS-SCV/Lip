@@ -112,8 +112,10 @@ def get_cached_receptor_pdbqt(pdb_path: str) -> str:
 
     # 최종 경로에 직접 쓰면 obabel 중단이나 워커 경합 시 잘린 파일이 영구 캐시되어
     # 이후 모든 도킹이 손상된 receptor를 쓴다. temp 파일에 쓴 뒤 원자적으로 교체한다.
+    # obabel은 출력 확장자로 포맷을 판단하므로 임시 파일도 반드시 .pdbqt 여야 한다
+    # (.tmp 등으로 끝나면 "unknown output format" 에러로 receptor 준비가 실패한다).
     fd, tmp_path = tempfile.mkstemp(
-        dir=_RECEPTOR_CACHE_DIR, suffix=".pdbqt.tmp"
+        dir=_RECEPTOR_CACHE_DIR, suffix=".pdbqt"
     )
     os.close(fd)
     try:
