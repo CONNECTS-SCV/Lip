@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from lip.scoring.docking import UniDockScorer; print\\('import OK, no heavy dep at import'\\)\")"
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+# Python 캐시/컴파일 산출물
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 패키징/빌드
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# 가상환경
+.venv/
+venv/
+env/
+ENV/
+
+# 테스트/커버리지 캐시
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 에디터/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# lip 런타임 산출물 (실행 결과 — 레포에 커밋하지 않는다)
+results/
+outputs/
+rl_output/
+checkpoints/
+*.chkpt
+lip_checkpoints.zip
+.cache/
+
+# 임시 작업 디렉토리 (ReinventWrapper work_dir: tempfile lip_*)
+lip_*/
+*.tmp

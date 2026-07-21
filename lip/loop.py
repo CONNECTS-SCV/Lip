@@ -159,13 +159,14 @@ class OptimizationLoop:
     # -----------------------------------------------------------------------
 
     def _run_managed_mode(self) -> list[RoundResult]:
-        """Run managed REINVENT4 learning with one real checkpoint per step.
+        """Run managed RL as ONE continuous in-process REINVENT4 training loop.
 
-        REINVENT4 does not reliably emit every stage checkpoint when Lip maps
-        product steps to cumulative stage cutoffs in one TOML. Run each Curieus
-        step as a one-step REINVENT call and feed the saved agent checkpoint
-        into the next step. This makes ``agent_stepN.chkpt`` real learned agent
-        weights, not copied placeholders.
+        이전에는 step마다 REINVENT를 별도 subprocess로 실행해 .chkpt를 체이닝했는데,
+        .chkpt는 가중치만 담아 매 step optimizer/diversity-filter/inception이 리셋되어
+        학습이 망가졌다. 이제는 lip 엔진이 REINVENT4 RL 컴포넌트를 in-process로
+        조립해 한 프로세스에서 n_steps를 연속 학습하며(상태 유지), best step에서
+        전체 학습상태를 스냅샷해 단일 번들 checkpoints/agent_step{best}.chkpt로 저장한다.
+        early-stop patience도 엔진이 처리한다.
         """
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -175,59 +176,49 @@ class OptimizationLoop:
         chkpt_dir = output_dir / "checkpoints"
         chkpt_dir.mkdir(parents=True, exist_ok=True)
 
-        all_results: list[RoundResult] = []
-        log.info(
-            f"Starting checkpointed REINVENT4 RL ({n_steps} one-step chunks)"
+        log.info(f"Starting in-process continuous REINVENT4 RL ({n_steps} steps)")
+
+        # 진행 로그: 엔진 step 진행을 실시간으로 보여준다(콜백/RoundResult는 최종
+        # _build_managed_round_results가 담당하므로 여기선 로깅만 — 이중 호출 방지).
+        def _log_step(sm: dict) -> None:
+            log.info(
+                "Step %d: mean=%.4f best=%.4f valid=%d/%d",
+                sm["step"], sm["mean_score"], sm["max_score"],
+                sm["n_valid"], sm["n"],
+            )
+
+        self.generator._on_engine_step = _log_step
+        self.generator._patience = self.config.optimization.early_stop_patience
+
+        # 단일 stage(max_steps=n_steps)를 1회 호출 → 엔진이 연속 학습 수행
+        stage = StageConfig(
+            max_steps=n_steps,
+            min_steps=1,
+            max_score=self.config.optimization.max_score,
+            scoring_components=components,
+            chkpt_file=str(chkpt_dir / "agent_step.chkpt"),
+        )
+        result = self.generator.run_staged_learning(
+            stages=[stage],
+            output_dir=str(output_dir),
         )
 
-        for step in range(1, n_steps + 1):
-            step_chkpt = chkpt_dir / f"agent_step{step}.chkpt"
-            step_output_dir = output_dir / "rl_output" / f"step_{step:03d}"
-            stage = StageConfig(
-                max_steps=1,
-                min_steps=1,
-                max_score=1.0,
-                scoring_components=components,
-                chkpt_file=str(step_chkpt),
-            )
-
-            result = self.generator.run_staged_learning(
-                stages=[stage],
-                output_dir=str(step_output_dir),
-            )
-
-            if not result.get("success"):
-                raise RuntimeError(
-                    f"REINVENT4 failed during managed learning step {step}: "
-                    f"{result.get('error', 'unknown')}"
-                )
-            if not step_chkpt.exists():
-                raise RuntimeError(
-                    "REINVENT4 did not create the expected Lip checkpoint: "
-                    f"{step_chkpt}"
-                )
-
-            step_results = self._build_managed_round_results(
-                result.get("scores_by_step", {}).get(1, []),
-                result.get("molecules_by_stage", {}).get(1, []),
-                round_start=step,
-                reinvent_stage=step,
-            )
-            if not step_results:
-                raise RuntimeError(
-                    "REINVENT4 managed learning produced no metrics for "
-                    f"step {step}; refusing to write a misleading progress plot."
-                )
-            all_results.extend(step_results[:1])
-
-        if len(all_results) < n_steps:
-            csv_files = sorted((output_dir / "rl_output").rglob("staged_learning*.csv"))
-            checkpoint_files = sorted(chkpt_dir.glob("agent_step*.chkpt"))
+        if not result.get("success"):
             raise RuntimeError(
-                "REINVENT4 managed learning produced fewer step metrics than expected: "
-                f"expected {n_steps}, parsed {len(all_results)}. "
-                f"CSV files={len(csv_files)}, checkpoints={len(checkpoint_files)}. "
-                "Refusing to write a misleading one-point progress plot."
+                "In-process managed learning failed: "
+                f"{result.get('error', 'unknown')}"
+            )
+
+        all_results = self._build_managed_round_results(
+            result.get("scores_by_step", {}).get(1, []),
+            result.get("molecules_by_stage", {}).get(1, []),
+            round_start=1,
+            reinvent_stage=1,
+        )
+        if not all_results:
+            raise RuntimeError(
+                "In-process managed learning produced no metrics; "
+                "refusing to write a misleading progress plot."
             )
 
         metrics_rows = []
@@ -514,6 +505,14 @@ class OptimizationLoop:
         raw_counts = []
 
         protein_mol = self._get_protein_mol()
+        if protein_mol is None:
+            # 로드 실패면 interaction 성분 전체가 0이 되어 목적함수가 조용히
+            # 비활성화된다. _get_protein_mol이 이미 warning을 남기지만, 여기서도
+            # 이 배치 전체가 0점 처리됨을 명시한다.
+            log.warning(
+                "Protein unavailable; interaction_count is 0 for all %d molecules "
+                "in this batch.", len(docking_results),
+            )
 
         for r in docking_results:
             if not r.success or not r.pose_pdbqt:

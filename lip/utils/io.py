@@ -22,7 +22,7 @@ def load_smiles_from_csv(
     """Load SMILES strings from a CSV file."""
     filepath = Path(filepath)
     smiles = []
-    with open(filepath, newline="") as f:
+    with open(filepath, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if column in row and row[column].strip():
@@ -58,7 +58,7 @@ def _write_csv(
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
     keys = list(results[0].keys())
-    with open(filepath, mode, newline="") as f:
+    with open(filepath, mode, newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=keys)
         if write_header:
             writer.writeheader()
@@ -142,13 +142,13 @@ def save_json(data: Any, filepath: str | Path) -> None:
     """Save data to JSON file."""
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def load_json(filepath: str | Path) -> Any:
     """Load data from JSON file."""
-    with open(filepath) as f:
+    with open(filepath, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -361,7 +361,7 @@ def _load_protein_only_receptor(
     chain_ids: set[str] = set()
     max_serial = 0
 
-    with open(receptor_pdb_path) as f:
+    with open(receptor_pdb_path, encoding="utf-8") as f:
         for raw_line in f:
             line = raw_line.rstrip()
             record = line[:6].strip()
@@ -392,7 +392,7 @@ def save_protein_only_receptor_pdb(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         if receptor_lines:
             f.write("\n".join(receptor_lines) + "\n")
         f.write("END\n")
@@ -469,7 +469,7 @@ def _generate_conect_records(
         with tempfile.TemporaryDirectory() as tmpdir:
             pdbqt_path = os.path.join(tmpdir, "ligand.pdbqt")
             pdb_path = os.path.join(tmpdir, "ligand.pdb")
-            with open(pdbqt_path, "w") as f:
+            with open(pdbqt_path, "w", encoding="utf-8") as f:
                 f.write(ligand_pdbqt)
 
             result = subprocess.run(
@@ -479,7 +479,7 @@ def _generate_conect_records(
             if result.returncode != 0:
                 return []
 
-            with open(pdb_path) as f:
+            with open(pdb_path, encoding="utf-8") as f:
                 pdb_lines = f.readlines()
 
             obabel_atom_count = sum(
@@ -587,5 +587,5 @@ def save_complex_pdb(
 
     all_lines.append("END")
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(all_lines) + "\n")

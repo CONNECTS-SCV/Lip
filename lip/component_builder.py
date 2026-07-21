@@ -7,6 +7,7 @@ the builder translates constraints into REINVENT4 components.
 from __future__ import annotations
 
 import sys
+import shlex
 import logging
 from pathlib import Path
 from typing import Any
@@ -148,9 +149,13 @@ class ComponentBuilder:
         box_sz = cfg.docking.box_size
         box = f"{box_sz},{box_sz},{box_sz}"
 
+        # REINVENT ExternalProcess는 args를 shlex.split한다
+        # (reinvent_plugins/components/comp_external_process.py:94). 따라서 공백이
+        # 포함될 수 있는 경로(script, receptor)는 shlex.quote로 감싸야 argv가 잘리지
+        # 않는다. Windows 경로에 공백이 흔해 이 처리가 없으면 전 도킹이 실패한다.
         args = (
-            f"{script} "
-            f"--receptor {cfg.receptor_pdb} "
+            f"{shlex.quote(script)} "
+            f"--receptor {shlex.quote(cfg.receptor_pdb)} "
             f"--center={center} "
             f"--box-size={box} "
             f"--exhaustiveness {cfg.docking.exhaustiveness} "

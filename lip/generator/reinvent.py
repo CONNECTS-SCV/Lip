@@ -204,6 +204,10 @@ class ReinventWrapper(BaseGenerator):
         self.inception_sample_size = config.get("inception_sample_size", 20)
         self.inception_retention_mode = config.get("inception_retention_mode", "top")
         self.work_dir = config.get("work_dir", "") or tempfile.mkdtemp(prefix="lip_")
+        # early-stop patience: best mean-score가 이 step 수만큼 갱신 안 되면 종료
+        self._patience = int(config.get("patience", 5))
+        # 엔진 step 진행 콜백(loop가 주입 가능). 기본은 no-op.
+        self._on_engine_step = config.get("on_step") or (lambda _sm: None)
 
         self._process: subprocess.Popen | None = None
 
@@ -299,50 +303,53 @@ class ReinventWrapper(BaseGenerator):
         output_dir = output_dir or self.work_dir
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-        toml_path = self._build_toml_config(stages, output_dir, inception_smiles_file)
+        # in-process 엔진으로 위임. 지연 import로 REINVENT4가 없는 환경(예: 순수
+        # sample() 경로)에서 모듈 로드 자체가 깨지지 않게 한다.
+        from lip.engine import run_managed_training
+        from lip.engine.config import EngineConfig
+        from lip.engine.scorer_config import build_scorer_config
 
-        cmd = [
-            sys.executable, "-m", "reinvent",
-            str(toml_path),
-        ]
+        if not stages:
+            return {"success": False, "error": "no stage provided"}
 
-        log.info(f"Starting REINVENT4: {' '.join(cmd)}")
+        stage = stages[0]
+        scorer_config = build_scorer_config(stage.scoring_components)
 
-        timeout = self.timeout
+        # 새 managed 경로는 stages=[max_steps=n_steps 단일 stage] 1회 호출.
+        engine_cfg = EngineConfig(
+            prior_file=self.prior_model,
+            agent_file=self.agent_model,
+            device=self.device,
+            n_steps=stage.max_steps,
+            batch_size=self.batch_size,
+            sigma=self.sigma,
+            learning_rate=self.learning_rate,
+            patience=self._patience,
+            diversity_filter=self.diversity_filter,
+            inception_memory_size=self.inception_memory_size,
+            inception_sample_size=self.inception_sample_size,
+            inception_smiles_file=inception_smiles_file,
+            work_dir=self.work_dir,
+        )
 
-        result = self._run_reinvent(cmd, output_dir, timeout)
+        chkpt_hint = stage.chkpt_file or str(
+            Path(output_dir) / "checkpoints" / "agent_step.chkpt"
+        )
+        tb_logdir = str(Path(output_dir) / "tb_logs")
 
-        if result.returncode != 0:
-            log.error(f"REINVENT4 failed:\n{result.stderr[-1000:] if result.stderr else ''}")
-            return {"success": False, "error": result.stderr[-1000:] if result.stderr else "unknown"}
+        result = run_managed_training(
+            engine_cfg,
+            scorer_config,
+            checkpoint_path=chkpt_hint,
+            on_step=self._on_engine_step,
+            tb_logdir=tb_logdir,
+        )
 
-        # Parse CSV results
-        scores_by_step: dict[int, list] = {}
-        molecules_by_stage: dict[int, list] = {}
-        for i in range(len(stages)):
-            csv_path = Path(output_dir) / f"staged_learning_{i + 1}.csv"
-            if csv_path.exists():
-                parsed = self._parse_rl_csv(str(csv_path))
-                scores_by_step[i + 1] = parsed["steps"]
-                molecules_by_stage[i + 1] = parsed["molecules"]
+        # 다음 이어학습을 위해 best 번들을 현재 agent로 채택
+        if result.get("success") and result.get("checkpoint_path"):
+            self.agent_model = result["checkpoint_path"]
 
-        # Find and load checkpoint
-        chkpt_path = None
-        for i in range(len(stages) - 1, -1, -1):
-            p = stages[i].chkpt_file or str(Path(output_dir) / f"agent_stage{i + 1}.chkpt")
-            if Path(p).exists():
-                chkpt_path = p
-                break
-        if chkpt_path:
-            self.agent_model = chkpt_path
-
-        return {
-            "success": True,
-            "checkpoint_path": chkpt_path,
-            "output_dir": output_dir,
-            "scores_by_step": scores_by_step,
-            "molecules_by_stage": molecules_by_stage,
-        }
+        return result
 
     def _run_reinvent(
         self, cmd: list[str], cwd: str, timeout: int,

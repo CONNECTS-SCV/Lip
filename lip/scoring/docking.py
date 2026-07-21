@@ -29,6 +29,11 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# 도킹 실패 시 사용하는 worst sentinel 점수(kcal/mol). 실제 Vina 결합 점수는 음수라
+# 어떤 성공 도킹보다도 나쁜 양수 값을 주어, 실패를 0.0("0 결합")과 구분하고
+# reverse_sigmoid transform에서 worst binder로 처리되게 한다.
+_DOCKING_FAILURE_SCORE = 10.0
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -105,7 +110,25 @@ def get_cached_receptor_pdbqt(pdb_path: str) -> str:
         log.info(f"Using cached receptor PDBQT: {cached_pdbqt}")
         return cached_pdbqt
 
-    prepare_receptor_pdbqt(abs_path, cached_pdbqt)
+    # 최종 경로에 직접 쓰면 obabel 중단이나 워커 경합 시 잘린 파일이 영구 캐시되어
+    # 이후 모든 도킹이 손상된 receptor를 쓴다. temp 파일에 쓴 뒤 원자적으로 교체한다.
+    fd, tmp_path = tempfile.mkstemp(
+        dir=_RECEPTOR_CACHE_DIR, suffix=".pdbqt.tmp"
+    )
+    os.close(fd)
+    try:
+        prepare_receptor_pdbqt(abs_path, tmp_path)
+        if not (os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0):
+            raise RuntimeError(
+                f"Receptor PDBQT preparation produced empty output for {abs_path}"
+            )
+        os.replace(tmp_path, cached_pdbqt)  # 원자적 교체
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError as e:
+                log.debug("Could not remove temp receptor file %s: %s", tmp_path, e)
     return cached_pdbqt
 
 
@@ -365,8 +388,14 @@ def vina_external_process_main():
                 r = scorer.dock_smiles(smi)
                 results.append((smi, r.score if r.success else 0.0, r.success, r.pose_pdbqt))
 
-        # Collect docking scores
-        docking_scores = [r[1] for r in results]
+        # Collect docking scores. 실패한 도킹(success=False)은 0.0이 아니라 명시적
+        # worst sentinel로 보낸다. Vina 점수는 음수(kcal/mol, 낮을수록 좋음)이고
+        # transform이 reverse_sigmoid이므로, 어떤 실제 결합 점수보다 나쁜 양수
+        # (_DOCKING_FAILURE_SCORE)를 주면 REINVENT가 실패를 "worst binder"로 학습한다.
+        # 0.0은 "0 kcal/mol 결합"이라는 유효 값과 혼동되므로 쓰지 않는다.
+        docking_scores = [
+            (r[1] if r[2] else _DOCKING_FAILURE_SCORE) for r in results
+        ]
         n_success = sum(1 for r in results if r[2])
         log.info(f"Docking done: {n_success}/{len(results)} succeeded")
         if n_success > 0:
@@ -385,6 +414,16 @@ def vina_external_process_main():
             except Exception as e:
                 log.warning(f"Failed to load protein for interaction analysis: {e}")
 
+            # protein 로드가 실패하면 interaction_count 성분 전체가 0이 되어 목적함수가
+            # 조용히 비활성화된다. analyze_interactions가 켜져 있는데 로드 실패면 1회
+            # 명확히 경고한다(per-molecule debug로 묻히지 않게).
+            if protein_mol is None:
+                log.warning(
+                    "Interaction analysis enabled but protein could not be loaded "
+                    "from %s; all interaction_count will be 0 this batch.",
+                    args.receptor,
+                )
+
             for smi, energy, success, pose in results:
                 if success and pose and protein_mol is not None:
                     try:
@@ -396,7 +435,9 @@ def vina_external_process_main():
                             protein_mol=protein_mol,
                         )
                         interaction_counts.append(float(analysis.total_count))
-                    except Exception:
+                    except Exception as e:
+                        # per-molecule 실패는 0이되 추적 가능하게 debug 로그를 남긴다
+                        log.debug("Interaction analysis failed for %s: %s", smi, e)
                         interaction_counts.append(0.0)
                 else:
                     interaction_counts.append(0.0)
@@ -479,6 +520,9 @@ class UniDockScorer(BaseDockingScorer):
                     pose = f.read()
 
                 energy = self._parse_energy(pose)
+                if energy is None:
+                    log.warning(f"Uni-Dock produced unparseable pose for {smiles}")
+                    return DockingResult(smiles=smiles, score=0.0, success=False)
                 return DockingResult(
                     smiles=smiles, score=energy, success=True, pose_pdbqt=pose,
                 )
@@ -550,6 +594,13 @@ class UniDockScorer(BaseDockingScorer):
                     with open(out_file) as f:
                         pose = f.read()
                     energy = self._parse_energy(pose)
+                    if energy is None:
+                        log.warning(
+                            "Uni-Dock produced unparseable pose for %s",
+                            smiles_list[idx],
+                        )
+                        # results[idx]는 이미 실패 기본값(success=False)이므로 스킵
+                        continue
                     results[idx] = DockingResult(
                         smiles=smiles_list[idx],
                         score=energy,
@@ -569,14 +620,24 @@ class UniDockScorer(BaseDockingScorer):
             ]
 
     @staticmethod
-    def _parse_energy(pdbqt_str: str) -> float:
-        """Extract best binding energy from PDBQT REMARK line."""
+    def _parse_energy(pdbqt_str: str) -> float | None:
+        """Extract best binding energy from PDBQT REMARK line.
+
+        파싱 실패(REMARK 없음/형식 이상) 시 None을 반환한다. 예전에는 0.0을
+        반환했는데, 0.0은 "결합 에너지 0 kcal/mol"이라는 유효 값과 구분되지 않아
+        파싱 실패가 success=True인 채 가짜 점수로 학습 보상에 섞였다. None으로
+        실패를 명시해 호출부가 success=False로 처리하게 한다.
+        """
         for line in pdbqt_str.splitlines():
             if line.startswith("REMARK VINA RESULT"):
                 parts = line.split()
                 if len(parts) >= 4:
-                    return float(parts[3])
-        return 0.0
+                    try:
+                        return float(parts[3])
+                    except ValueError:
+                        log.warning("Malformed VINA RESULT energy: %r", line)
+                        return None
+        return None
 
 
 # ---------------------------------------------------------------------------
