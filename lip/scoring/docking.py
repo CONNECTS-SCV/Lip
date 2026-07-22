@@ -256,7 +256,10 @@ def _dock_one(smiles: str) -> tuple:
             return (smiles, energy, True, pose)
         finally:
             os.unlink(lig_path)
-    except Exception:
+    except Exception as e:
+        # 실패 원인을 stderr로 남긴다(예전엔 조용히 삼켜 왜 전 도킹이 실패하는지
+        # 로그에 안 보였다). [LIP-DOCK] 태그로 CLI stderr에 나온다.
+        log.warning("Vina worker docking failed for %s: %s", smiles[:60], e)
         return (smiles, 0.0, False, "")
 
 
@@ -279,9 +282,28 @@ def vina_external_process_main():
     _real_stdout = sys.stdout
     sys.stdout = io.StringIO()
 
-    # Configure stderr logging so failures are visible
+    # Configure logging so docking failures are visible.
+    # REINVENT ExternalProcess는 run_command(capture_output=True)로 이 CLI를 부르므로
+    # exit 0이면 stderr가 캡처만 되고 부모(script.log)엔 안 보인다. 따라서 stderr뿐
+    # 아니라 파일 핸들러도 붙여, 도킹 실패 원인이 항상 파일로 남게 한다.
+    # 파일은 LIP_DOCK_LOG 환경변수(있으면) 또는 receptor 옆 dock.log 로 남긴다.
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    log_path = os.environ.get("LIP_DOCK_LOG", "")
+    if not log_path:
+        # receptor 인자를 미리 훑어 그 디렉토리에 dock.log 를 만든다
+        for i, a in enumerate(sys.argv):
+            if a == "--receptor" and i + 1 < len(sys.argv):
+                log_path = os.path.join(
+                    os.path.dirname(os.path.abspath(sys.argv[i + 1])), "lip_dock.log"
+                )
+                break
+    if log_path:
+        try:
+            handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+        except OSError:
+            pass  # 파일 못 열면 stderr만 사용
     logging.basicConfig(
-        level=logging.DEBUG, stream=sys.stderr,
+        level=logging.DEBUG, handlers=handlers,
         format="[LIP-DOCK] %(levelname)s %(message)s",
     )
 
