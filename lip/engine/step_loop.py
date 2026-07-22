@@ -11,8 +11,10 @@ per-step 본체(learning.py:133-188: sample→score→DF.update_score→update�
 
 from __future__ import annotations
 
+import csv
 import logging
 import time
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -24,6 +26,12 @@ log = logging.getLogger(__name__)
 
 _TOP_K = 10  # top-N 평균 계산용
 
+# 학습 진단 CSV의 컬럼(순서 고정)
+_DIAG_FIELDS = (
+    "step", "agent_nll", "prior_nll", "agent_prior_gap", "loss",
+    "mean_score", "valid_mean_score", "n_valid", "n",
+)
+
 
 class BestTrackingReinventLearning(ReinventLearning):
     """자체 step 루프 + best 추적 + patience early-stop + per-step 메트릭 수집."""
@@ -33,26 +41,29 @@ class BestTrackingReinventLearning(ReinventLearning):
         patience: int,
         on_step: Callable[[dict], None],
         snapshot_best: Callable[[int, float], None],
+        diagnostics_path: str | None = None,
     ) -> tuple[list[dict], list[dict], int]:
         """step 루프를 돈다.
 
         Args:
-            patience: best mean-score가 이 step 수만큼 갱신 안 되면 종료.
+            patience: best 유효분자 평균 점수가 이 step 수만큼 갱신 안 되면 종료.
             on_step: 각 step의 step-metric dict를 받는 콜백(진행 표시).
             snapshot_best: 새 best 발견 시 (step, score)로 호출(스냅샷 훅).
+            diagnostics_path: 학습 진단 CSV 저장 경로(선택). agent_nll/loss/gap 등 기록.
 
         Returns:
             (step_metrics, molecules, best_step)
             step_metrics: lip _parse_rl_csv "steps"와 동일 형태 dict 리스트.
             molecules: lip _parse_rl_csv "molecules"와 동일 형태 dict 리스트.
-            best_step: best mean_score를 낸 1-기반 step 번호(없으면 0).
+            best_step: best 유효분자 평균을 낸 1-기반 step 번호(없으면 0).
         """
         self.start_time = time.time()
-        best_mean = -float("inf")
+        best_valid_mean = -float("inf")
         best_step = 0
         no_improve = 0
         step_metrics: list[dict] = []
         molecules: list[dict] = []
+        diagnostics: list[dict] = []  # step별 학습 진단 지표
 
         for step in range(self.max_steps):
             # --- learning.py:133-188 per-step 본체 미러링 ---
@@ -99,21 +110,46 @@ class BestTrackingReinventLearning(ReinventLearning):
                 loss=loss.item(),
             )
 
+            # --- 학습 진단 지표 (agent NLL이 내려가고 gap이 벌어지면 학습 진행) ---
+            agent_nll = float((-agent_lls).mean().item()) if agent_lls.numel() else 0.0
+            prior_nll = float((-prior_lls).mean().item()) if prior_lls.numel() else 0.0
+            diag = {
+                "step": step_no,
+                "agent_nll": round(agent_nll, 4),
+                "prior_nll": round(prior_nll, 4),
+                "agent_prior_gap": round(agent_nll - prior_nll, 4),
+                "loss": round(float(loss.item()), 4),
+                "mean_score": round(mean_score, 4),
+                "valid_mean_score": round(sm["valid_mean_score"], 4),
+                "n_valid": sm["n_valid"],
+                "n": sm["n"],
+            }
+            diagnostics.append(diag)
+            log.info(
+                "Step %d train: agent_nll=%.3f gap=%.3f loss=%.4f valid_mean=%.4f",
+                step_no, agent_nll, agent_nll - prior_nll,
+                float(loss.item()), sm["valid_mean_score"],
+            )
+
             self._log_continuity(step_no)
             on_step(sm)
 
-            # --- best 추적 + patience ---
-            if mean_score > best_mean + 1e-9:
-                best_mean = mean_score
+            # --- best 추적 + patience (유효분자 평균 기준) ---
+            # 전체 평균(mean_score)은 invalid=0에 눌려 둔하므로, 학습 신호가 더
+            # 잘 드러나는 valid_mean_score로 best/patience를 판단한다. 유효분자가
+            # 하나도 없는 step(valid_mean=0)은 개선으로 오판하지 않도록 가드.
+            valid_mean = sm["valid_mean_score"]
+            if sm["n_valid"] > 0 and valid_mean > best_valid_mean + 1e-9:
+                best_valid_mean = valid_mean
                 best_step = step_no
                 no_improve = 0
-                snapshot_best(step_no, mean_score)
+                snapshot_best(step_no, valid_mean)
             else:
                 no_improve += 1
                 if no_improve >= patience:
                     log.info(
-                        "Patience %d reached at step %d (best=%d, %.4f); stopping.",
-                        patience, step_no, best_step, best_mean,
+                        "Patience %d reached at step %d (best=%d, valid_mean=%.4f); stopping.",
+                        patience, step_no, best_step, best_valid_mean,
                     )
                     break
 
@@ -121,7 +157,24 @@ class BestTrackingReinventLearning(ReinventLearning):
             self.tb_reporter.flush()
             self.tb_reporter.close()
 
+        if diagnostics_path and diagnostics:
+            self._save_diagnostics(diagnostics, diagnostics_path)
+
         return step_metrics, molecules, best_step
+
+    @staticmethod
+    def _save_diagnostics(rows: list[dict], path: str) -> None:
+        """step별 학습 진단 지표를 CSV로 저장(학습이 진짜 진행되는지 확인용)."""
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=list(_DIAG_FIELDS))
+                writer.writeheader()
+                writer.writerows(rows)
+            log.info("Training diagnostics saved: %s", path)
+        except OSError as e:
+            # 진단 저장 실패가 학습 결과를 막지 않도록 로그만 남기고 넘어간다
+            log.warning("Failed to save training diagnostics to %s: %s", path, e)
 
     def _collect_step_metrics(
         self, step_no: int, results

@@ -60,11 +60,13 @@ def run_managed_training(
         best["score"] = score
         log.debug("New best at step %d: %.4f (snapshot taken)", step_no, score)
 
-    # 3) step 루프 실행
+    # 3) step 루프 실행. 학습 진단 CSV는 output_dir(=checkpoints의 상위)에 저장.
+    diagnostics_path = str(Path(checkpoint_path).parent.parent / "training_diagnostics.csv")
     step_metrics, molecules, best_step = learner.run(
         patience=engine_cfg.patience,
         on_step=on_step,
         snapshot_best=snapshot_best,
+        diagnostics_path=diagnostics_path,
     )
 
     # 4) best가 없으면(유효 step 0) 오해를 부르는 산출 대신 실패 보고
