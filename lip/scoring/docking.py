@@ -110,6 +110,15 @@ def get_cached_receptor_pdbqt(pdb_path: str) -> str:
         log.info(f"Using cached receptor PDBQT: {cached_pdbqt}")
         return cached_pdbqt
 
+    # obabel gasteiger 변환은 원본 PDB의 HETATM(리간드/물/이온)이 섞여 있으면 빈
+    # 출력을 내 receptor 준비가 실패한다(RL 도킹 전멸의 원인). 그래서 obabel에 넘기기
+    # 전에 HETATM을 제거한 protein-only PDB로 정제한다. 최종 도킹은 이미 정제본을
+    # 넘기므로 재정제해도 무해하고, 이 함수를 거치는 RL·최종 양쪽이 동일하게 통과한다.
+    from lip.utils.io import save_protein_only_receptor_pdb
+
+    prot_fd, prot_pdb = tempfile.mkstemp(dir=_RECEPTOR_CACHE_DIR, suffix=".pdb")
+    os.close(prot_fd)
+
     # 최종 경로에 직접 쓰면 obabel 중단이나 워커 경합 시 잘린 파일이 영구 캐시되어
     # 이후 모든 도킹이 손상된 receptor를 쓴다. temp 파일에 쓴 뒤 원자적으로 교체한다.
     # obabel은 출력 확장자로 포맷을 판단하므로 임시 파일도 반드시 .pdbqt 여야 한다
@@ -119,18 +128,20 @@ def get_cached_receptor_pdbqt(pdb_path: str) -> str:
     )
     os.close(fd)
     try:
-        prepare_receptor_pdbqt(abs_path, tmp_path)
+        save_protein_only_receptor_pdb(abs_path, prot_pdb)
+        prepare_receptor_pdbqt(prot_pdb, tmp_path)
         if not (os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0):
             raise RuntimeError(
                 f"Receptor PDBQT preparation produced empty output for {abs_path}"
             )
         os.replace(tmp_path, cached_pdbqt)  # 원자적 교체
     finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError as e:
-                log.debug("Could not remove temp receptor file %s: %s", tmp_path, e)
+        for _tmp in (tmp_path, prot_pdb):
+            if os.path.exists(_tmp):
+                try:
+                    os.remove(_tmp)
+                except OSError as e:
+                    log.debug("Could not remove temp receptor file %s: %s", _tmp, e)
     return cached_pdbqt
 
 
