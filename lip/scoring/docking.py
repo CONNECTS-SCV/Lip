@@ -34,6 +34,17 @@ log = logging.getLogger(__name__)
 # reverse_sigmoid transform에서 worst binder로 처리되게 한다.
 _DOCKING_FAILURE_SCORE = 10.0
 
+# Vina/UniDock 결합 자유에너지의 물리적 하한(kcal/mol). 실제 결합은 대략 -15 ~ 0
+# 범위이고, 이보다 낮은 값(-100 등)은 리간드 clash나 도킹 발산의 산물이다. 이런
+# 값이 reverse_sigmoid transform에서 만점(1.0)으로 매핑되면 학습이 쓰레기 구조를
+# 최고 보상으로 학습하므로, 하한을 벗어난 점수는 도킹 실패로 처리한다.
+_DOCKING_ENERGY_FLOOR = -15.0
+
+
+def _is_physical_energy(energy: float | None) -> bool:
+    """도킹 에너지가 물리적으로 타당한 범위인지 검사(None/하한 미만은 부적합)."""
+    return energy is not None and energy >= _DOCKING_ENERGY_FLOOR
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -70,12 +81,37 @@ def prepare_ligand_pdbqt(smiles: str) -> tuple[str, bool]:
     if AllChem.EmbedMolecule(mol, AllChem.ETKDGv3()) == -1:
         if AllChem.EmbedMolecule(mol, AllChem.EmbedParameters()) == -1:
             return "", False
-    AllChem.MMFFOptimizeMolecule(mol, maxIters=200)
+
+    # 좌표 최적화가 발산하면 원자가 겹친 clash 구조가 만들어지고, 그 좌표로 도킹하면
+    # -100 이하의 비물리적 결합 에너지와 깨진 atom type(원소 'G' 등)이 나온다.
+    # MMFF 반환값(0=수렴, 1=미수렴, -1=force field 준비 실패)을 반드시 확인하고,
+    # 실패 시 UFF로 폴백해 최소한 물리적으로 타당한 형태를 확보한다.
+    if not _optimize_geometry(mol):
+        log.warning("Ligand geometry optimization failed for %s", smiles)
+        return "", False
 
     preparator = MoleculePreparation()
     mol_setups = preparator.prepare(mol)
     pdbqt_str, is_ok, _ = PDBQTWriterLegacy.write_string(mol_setups[0])
     return pdbqt_str, is_ok
+
+
+def _optimize_geometry(mol) -> bool:
+    """MMFF→UFF 순으로 3D 좌표를 최적화한다. 성공(수렴/미수렴) 시 True.
+
+    force field 준비가 안 되는 분자(반환 -1)는 폴백을 시도하고, 둘 다 안 되면
+    False를 반환해 호출부가 그 리간드를 버리게 한다(clash pose로 도킹되는 것을 차단).
+    """
+    from rdkit.Chem import AllChem
+
+    # MMFF: 반환 -1이면 force field 미준비(실패), 0/1이면 수렴/미수렴이라 사용 가능.
+    mmff_rc = AllChem.MMFFOptimizeMolecule(mol, maxIters=200)
+    if mmff_rc in (0, 1):
+        return True
+
+    # MMFF가 준비 안 되면 UFF로 폴백. UFF는 거의 모든 원소를 커버한다.
+    uff_rc = AllChem.UFFOptimizeMolecule(mol, maxIters=200)
+    return uff_rc in (0, 1)
 
 
 def prepare_receptor_pdbqt(pdb_path: str, output_path: str):
@@ -264,6 +300,14 @@ def _dock_one(smiles: str) -> tuple:
             _worker_vina.dock(exhaustiveness=_worker_exhaustiveness, n_poses=1)
             energy = _worker_vina.energies()[0][0]
             pose = _worker_vina.poses(n_poses=1)
+            # clash 리간드는 Vina에서도 비물리적 음수(-100 등)를 낼 수 있다. 물리적
+            # 하한을 벗어나면 실패로 처리해 학습 보상 오염을 막는다(UniDock과 동일 기준).
+            if not _is_physical_energy(energy):
+                log.warning(
+                    "Vina produced non-physical energy %s for %s; treating as failure",
+                    energy, smiles[:60],
+                )
+                return (smiles, 0.0, False, "")
             return (smiles, energy, True, pose)
         finally:
             os.unlink(lig_path)
@@ -550,8 +594,11 @@ class UniDockScorer(BaseDockingScorer):
                     pose = f.read()
 
                 energy = self._parse_energy(pose)
-                if energy is None:
-                    log.warning(f"Uni-Dock produced unparseable pose for {smiles}")
+                if not _is_physical_energy(energy):
+                    log.warning(
+                        "Uni-Dock produced non-physical/unparseable pose for %s "
+                        "(energy=%s); treating as docking failure", smiles, energy,
+                    )
                     return DockingResult(smiles=smiles, score=0.0, success=False)
                 return DockingResult(
                     smiles=smiles, score=energy, success=True, pose_pdbqt=pose,
@@ -624,10 +671,11 @@ class UniDockScorer(BaseDockingScorer):
                     with open(out_file) as f:
                         pose = f.read()
                     energy = self._parse_energy(pose)
-                    if energy is None:
+                    if not _is_physical_energy(energy):
                         log.warning(
-                            "Uni-Dock produced unparseable pose for %s",
-                            smiles_list[idx],
+                            "Uni-Dock produced non-physical/unparseable pose for %s "
+                            "(energy=%s); treating as docking failure",
+                            smiles_list[idx], energy,
                         )
                         # results[idx]는 이미 실패 기본값(success=False)이므로 스킵
                         continue
