@@ -39,13 +39,22 @@ _EXTERNAL_PROCESS = "ExternalProcess"
 
 def _endpoint_block(comp: "ScoringComponent") -> dict:
     """ScoringComponent 하나를 endpoint dict로 변환."""
-    ep: dict = {"name": comp.name or comp.type, "weight": comp.weight}
+    name = comp.name or comp.type
+    ep: dict = {"name": name, "weight": comp.weight}
     if comp.transform:
         # lip transform dict는 이미 {"type": ..., ...} 형태라 그대로 사용
         ep["transform"] = dict(comp.transform)
-    # ExternalProcess의 executable/args는 component-level params로 가고,
-    # endpoint params에는 넣지 않는다(그룹핑된 여러 endpoint가 공유하므로).
-    if comp.params and comp.type != _EXTERNAL_PROCESS:
+    if comp.type == _EXTERNAL_PROCESS:
+        # REINVENT ExternalProcess.Parameters는 endpoint마다 executable/args/property를
+        # List[str]로 요구한다(comp_external_process.py:39-41). get_components가 각
+        # endpoint params를 collect_params로 리스트화하므로, 각 endpoint에 셋 다 넣는다.
+        # property는 CLI payload에서 읽을 점수 키 = 이 endpoint의 name.
+        ep["params"] = {
+            "executable": comp.params.get("executable", ""),
+            "args": comp.params.get("args", ""),
+            "property": name,
+        }
+    elif comp.params:
         ep["params"] = dict(comp.params)
     return ep
 
@@ -73,12 +82,13 @@ def build_scorer_config(components: list["ScoringComponent"]) -> dict:
                 {comp.type: {"endpoint": [_endpoint_block(comp)]}}
             )
 
-    for (executable, args), comps in ext_groups.items():
+    for (_executable, _args), comps in ext_groups.items():
+        # executable/args/property는 각 endpoint params에 들어간다(_endpoint_block).
+        # component-level params는 두지 않는다(중복 방지).
         comp_blocks.append(
             {
                 _EXTERNAL_PROCESS: {
                     "endpoint": [_endpoint_block(c) for c in comps],
-                    "params": {"executable": executable, "args": args},
                 }
             }
         )
