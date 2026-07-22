@@ -126,6 +126,52 @@ def save_top_molecules_sdf(
         log.warning(f"No top molecule conformers could be written to {filepath}")
 
 
+def save_docked_poses_sdf(
+    pose_records: list[dict[str, Any]],
+    filepath: str | Path,
+) -> int:
+    """Save docked ligand poses (real docking coordinates) as one SDF file.
+
+    conformer가 아니라 실제 도킹 pose 좌표를 담는다. 각 record는 pose_pdbqt(도킹된
+    리간드 PDBQT 문자열)와 부가 정보(smiles/score/rank 등)를 가진다. pose_pdbqt의
+    ATOM 좌표를 보존해 Mol로 변환하는 기존 _pdbqt_to_mol을 재사용한다.
+
+    Returns: 실제로 기록된 pose 수(0이면 호출부가 기존 sdf를 덮어쓰지 않게 판단).
+    """
+    from rdkit import Chem
+    from lip.scoring.interactions import _pdbqt_to_mol
+
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    writer = Chem.SDWriter(str(filepath))
+    n_written = 0
+    for record in pose_records:
+        pose_pdbqt = record.get("pose_pdbqt") or ""
+        if not pose_pdbqt:
+            continue
+        mol = _pdbqt_to_mol(pose_pdbqt)
+        if mol is None:
+            log.warning(
+                "Failed to parse docked pose for %s",
+                str(record.get("smiles", ""))[:50],
+            )
+            continue
+        for key, value in record.items():
+            if key == "pose_pdbqt" or value is None:
+                continue
+            mol.SetProp(str(key), str(value))
+        writer.write(mol)
+        n_written += 1
+
+    writer.close()
+    if n_written:
+        log.info(f"Docked-pose SDF saved: {filepath} ({n_written} poses)")
+    else:
+        log.warning(f"No docked poses could be written to {filepath}")
+    return n_written
+
+
 def load_mols_from_sdf(filepath: str | Path) -> list:
     """Load RDKit Mol objects from an SDF file."""
     from rdkit import Chem

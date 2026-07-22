@@ -297,6 +297,7 @@ def _redock_top_molecules(
         choose_ligand_chain_id,
         collect_top_molecules,
         save_complex_pdb,
+        save_docked_poses_sdf,
         save_protein_only_receptor_pdb,
         save_results_csv,
     )
@@ -342,6 +343,7 @@ def _redock_top_molecules(
     dock_results = scorer.dock_batch(smiles_list)
 
     docked_records = []
+    pose_records = []  # top_molecules.sdf를 도킹 좌표로 덮어쓰기 위한 pose 모음
     for i, (mol, result) in enumerate(zip(top_mols, dock_results)):
         if not result.success:
             log.warning(f"Re-docking failed: {mol['smiles'][:50]}")
@@ -364,11 +366,23 @@ def _redock_top_molecules(
             "optimization_score": mol.get("score", 0.0),
             "complex_pdb": filename,
         })
+        pose_records.append({
+            "rank": rank,
+            "smiles": mol["smiles"],
+            "docking_score": result.score,
+            "optimization_score": mol.get("score", 0.0),
+            "pose_pdbqt": result.pose_pdbqt,
+        })
 
         log.info(f"  Rank {rank}: {result.score:.2f} kcal/mol — {mol['smiles'][:50]}")
 
     if docked_records:
         save_results_csv(docked_records, poses_dir / "docking_summary.csv")
+
+    # top_molecules.sdf를 conformer가 아니라 실제 도킹 pose 좌표로 덮어쓴다.
+    # (final_docking일 때만 이 함수가 실행되므로 pose가 존재한다.)
+    if pose_records:
+        save_docked_poses_sdf(pose_records, output_dir / "top_molecules.sdf")
 
     log.info(
         f"Re-docking complete: {len(docked_records)}/{len(top_mols)} succeeded, "
