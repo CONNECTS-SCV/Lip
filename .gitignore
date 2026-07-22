@@ -24,11 +24,13 @@ ENV/
 .coverage
 htmlcov/
 
-# 에디터/OS
+# 에디터/OS/도구
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+.claude/
+.agents/
 
 # lip 런타임 산출물 (실행 결과 — 레포에 커밋하지 않는다)
 results/
