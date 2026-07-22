@@ -282,28 +282,9 @@ def vina_external_process_main():
     _real_stdout = sys.stdout
     sys.stdout = io.StringIO()
 
-    # Configure logging so docking failures are visible.
-    # REINVENT ExternalProcess는 run_command(capture_output=True)로 이 CLI를 부르므로
-    # exit 0이면 stderr가 캡처만 되고 부모(script.log)엔 안 보인다. 따라서 stderr뿐
-    # 아니라 파일 핸들러도 붙여, 도킹 실패 원인이 항상 파일로 남게 한다.
-    # 파일은 LIP_DOCK_LOG 환경변수(있으면) 또는 receptor 옆 dock.log 로 남긴다.
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
-    log_path = os.environ.get("LIP_DOCK_LOG", "")
-    if not log_path:
-        # receptor 인자를 미리 훑어 그 디렉토리에 dock.log 를 만든다
-        for i, a in enumerate(sys.argv):
-            if a == "--receptor" and i + 1 < len(sys.argv):
-                log_path = os.path.join(
-                    os.path.dirname(os.path.abspath(sys.argv[i + 1])), "lip_dock.log"
-                )
-                break
-    if log_path:
-        try:
-            handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
-        except OSError:
-            pass  # 파일 못 열면 stderr만 사용
+    # Configure stderr logging so failures are visible
     logging.basicConfig(
-        level=logging.DEBUG, handlers=handlers,
+        level=logging.DEBUG, stream=sys.stderr,
         format="[LIP-DOCK] %(levelname)s %(message)s",
     )
 
@@ -350,18 +331,21 @@ def vina_external_process_main():
             n_workers = min(max(os.cpu_count() // 4, 1), 4)
         n_workers = max(1, min(n_workers, len(smiles_list)))
 
-        # Ensure cached receptor PDBQT exists
+        # Ensure cached receptor PDBQT exists.
+        # receptor 준비 실패는 치명적(전 분자 도킹 불가)이다. 조용히 0점 payload를
+        # 주면 REINVENT run_command(capture_output=True)가 stderr를 버려 script.log에
+        # 원인이 안 남는다. 대신 stderr에 사유를 찍고 non-zero exit로 죽으면, REINVENT가
+        # CalledProcessError를 ValueError(stderr 포함)로 raise해 script.log에 그대로 남는다.
         try:
             rec_pdbqt = get_cached_receptor_pdbqt(args.receptor)
             log.info(f"Receptor PDBQT ready: {rec_pdbqt}")
         except Exception as e:
-            log.error(f"Receptor PDBQT preparation failed: {e}")
-            sys.stdout = _real_stdout
-            payload = {"docking_score": [0.0] * len(smiles_list)}
-            if args.analyze_interactions:
-                payload["interaction_count"] = [0.0] * len(smiles_list)
-            print(json.dumps({"version": 1, "payload": payload}))
-            return
+            print(
+                f"[LIP-DOCK] Receptor PDBQT preparation failed for "
+                f"{args.receptor}: {e}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         # Dock molecules
         results = None
