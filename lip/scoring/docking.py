@@ -377,8 +377,19 @@ def vina_external_process_main():
                     for r in dock_results
                 ]
             except Exception as e:
-                log.error(f"Uni-Dock failed: {e}, falling back to Vina")
-                results = None
+                # unidock을 선택했는데 실패하면 조용히 vina로 fallback하지 않는다.
+                # REINVENT run_command(capture_output)는 exit 0이면 stderr를 버려,
+                # vina로 성공하면 unidock 실패 원인이 script.log에서 사라진다. 그래서
+                # 실패 사유를 stderr에 찍고 exit 1로 죽여 REINVENT가 script.log에
+                # 그대로 남기게 한다(GPU/CUDA 환경 등 원인 파악용). auto로 unidock이
+                # 선택된 경우도 동일 — RL 도킹이 왜 GPU를 못 쓰는지 드러난다.
+                import traceback
+                print(
+                    f"[LIP-DOCK] Uni-Dock failed (method={method}): {e}\n"
+                    f"{traceback.format_exc()}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
         if results is None and n_workers > 1:
             log.info(f"Parallel Vina docking with {n_workers} workers")
